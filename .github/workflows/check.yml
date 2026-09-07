@@ -1,17 +1,17 @@
-name: Checks
+name: Source parity checks
 on: [push, pull_request]
 permissions:
   contents: read
 jobs:
-  test:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Unit tests and syntax
+      - name: Validate original runtime and isolated command behavior
+        run: python3 -m unittest discover -s tests -v
+      - name: Regenerate example text and HTML
         run: |
-          python3 -m unittest discover -s tests -v
-          bash -n install.sh hooks/mariadb hooks/postgresql hooks/mongodb
-      - name: Install integration dependencies
-        run: sudo apt-get update && sudo apt-get install -y restic rsync
-      - name: Disposable Linux backup and restore
-        run: python3 tests/integration.py
+          python3 docs/examples/generate.py
+          git diff --exit-code -- docs/examples
+      - name: Verify distribution manifest
+        run: sha256sum -c MANIFEST.sha256

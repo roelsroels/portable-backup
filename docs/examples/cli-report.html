@@ -1,8 +1,72 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><title>Health report</title><body style="margin:0;padding:32px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1000px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · EXAMPLE</p><h1 style="color:#0f172a;font-size:28px;">Health report</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Terminal · synthetic demonstration</div><pre style="padding:24px;margin:0;color:#e2e8f0;font:15px/1.8 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">$ sudo /opt/portable-backup/bin/pb report
-server-a: OK; snapshot age 2.0h; pipeline success
-server-b: CRITICAL; snapshot age 42.0h; pipeline failed
-Capacity /var/lib/portable-backup: OK; 24.0% used
-Capacity /mnt/backup-storage: ALERT; 85.0% used
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Backup report</title><body style="margin:0;padding:28px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1024px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · SYNTHETIC EXAMPLE</p><h1 style="color:#0f172a;font-size:26px;">Backup report</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Original Bash command · anonymized demonstration</div><pre style="padding:22px;margin:0;color:#e2e8f0;font:14px/1.6 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">$ sudo backup report
+===========================================
+          PORTABLE BACKUP REPORT
+===========================================
 
-$ echo $?
-2</pre></div><p style="font-size:13px;color:#475569;">Illustrative commands and abbreviated output. No live host data is shown.</p></div></body></html>
+Generated          : EXAMPLE-TIME
+Report server      : coordinator.example.invalid
+
+Backup storage    : ALERT
+Storage capacity   : usage=85%, alert threshold=80%, available=150G
+Alert threshold    : &gt;=80%
+Critical threshold : &gt;=90%
+
+*** STORAGE CAPACITY ALERT ***
+Usage is 85%. Critical status begins at 90%.
+
+-------------------------------------------
+Host: server-a
+-------------------------------------------
+Status             : OK
+Restic host        : server-a
+Repository         : /mnt/backup-storage/backups/restic/server-a
+Repository usage   : &lt;example-size&gt;
+Snapshots stored   : &lt;example-count&gt;
+Latest snapshot    : &lt;snapshot-id&gt;
+Latest timestamp   : &lt;snapshot-time&gt;
+Latest age         : 2h
+Latest data size   : &lt;example-size&gt;
+Maximum age        : 30h
+
+Timer
+  Unit             : portable-backup-server-a.timer
+  Active           : active
+  Enabled          : enabled
+  Next run         : &lt;next-run&gt;
+
+Last service
+  Unit             : portable-backup@server-a.service
+  Result           : success
+  Exit status      : 0
+  Finished         : &lt;finished-time&gt;
+
+-------------------------------------------
+Host: server-b
+-------------------------------------------
+Status             : OK
+Restic host        : server-b
+Repository         : /mnt/backup-storage/backups/restic/server-b
+Repository usage   : &lt;example-size&gt;
+Snapshots stored   : &lt;example-count&gt;
+Latest snapshot    : &lt;snapshot-id&gt;
+Latest timestamp   : &lt;snapshot-time&gt;
+Latest age         : 2h
+Latest data size   : &lt;example-size&gt;
+Maximum age        : 30h
+
+Timer
+  Unit             : portable-backup-server-b.timer
+  Active           : active
+  Enabled          : enabled
+  Next run         : &lt;next-run&gt;
+
+Last service
+  Unit             : portable-backup@server-b.service
+  Result           : success
+  Exit status      : 0
+  Finished         : &lt;finished-time&gt;
+
+===========================================
+Overall status     : ALERT
+===========================================
+</pre></div><p style="font-size:12px;color:#475569;">Synthetic placeholders; no live repository, timestamps or server data shown.</p></div></body></html>

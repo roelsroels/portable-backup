@@ -1,37 +1,11 @@
-# Source selection and application exports
+# Preparation behavior
 
-`include` is a JSON array of absolute paths. Every required path must exist. `/` and parent traversal are rejected. `extra_paths_file` adds one absolute path per line; blank lines and comments are ignored. Avoid overlapping parent/child sources. Directory copies preserve numeric owners, hard links within each copy, ACLs, extended attributes and relative hierarchy. Symlinks are copied as links. Hard links between separately copied trees may not remain linked.
+The local and remote preparation scripts are the installed scripts after literal anonymization. Both preserve filesystem hierarchy and capture system inventory, application exports and optional Docker volume data. The local script uses one-filesystem rsync copies; the remote helper does not add that flag. Configure separate mounted sources as needed and inspect actual coverage.
 
-Copies stay within one filesystem. List separate mounted data directories explicitly. `exclude` contains absolute subtrees; private staging and cache are always excluded. Add all local repository/storage locations to exclusions if a source is their ancestor. Do not select remote storage, pseudo filesystems or backup trees as sources. The sample scope is deliberately generic and is not a complete inventory of any installation.
+Local host config uses INCLUDE_PATHS, EXCLUDE_PATHS, EXTRA_PATHS and BACKUP_LEGACY_DOCKER_BACKUPS. Remote config uses BASE_PATHS, BACKUP_SITES, BACKUP_MAILDIR and an EXTRA_PATHS_FILE. Paths tied to specific applications/accounts have neutral placeholders; adjust them. Missing paths are skipped, exactly as installed.
 
-## rsync exit 24
+Local MariaDB/MongoDB/Docker exports run when not disabled, tools exist and their services are active. Local PostgreSQL exports enumerate online clusters. Remote exports use explicit yes/no flags and client availability. Enabled but unavailable integrations can be skipped by these original conditions; review actual export contents rather than treating flags as proof of coverage.
 
-Only live filesystem and live Docker-volume copies accept rsync exit 24, logging a warning for vanished source files. Every other nonzero code fails preparation. A source that changes during copying is not a consistent application snapshot. Exit 24 acceptance does not make databases transactionally safe. The subsequent completed-export tar stream is strict: any nonzero producer or receiver exit fails, and the receiver verifies SHA-256 checksums before Restic runs. Restic nonzero results, including incomplete-backup results, fail the pipeline and skip retention.
+Rsync exit 24 is accepted only in local live copies (filesystem and Docker volumes). Remote live copies and completed-export transfers are strict. No additional error suppression was introduced.
 
-## Database hooks
-
-Add argv arrays to `export_hooks` in source.json, for example:
-
-```json
-"export_hooks": [
-  ["/opt/portable-backup/hooks/mariadb"],
-  ["/opt/portable-backup/hooks/postgresql", "5432"],
-  ["/opt/portable-backup/hooks/mongodb"]
-]
-```
-
-Enable only installed databases. Enabled hooks fail if clients, permissions or services are unavailable; there is no silent auto-detection. Hooks write under `PB_EXPORT_DIR`; their normal output goes to the journal, not the export stream. Pipelines use pipefail, and zstd tests the compressed output.
-
-MariaDB uses a single-transaction all-database logical dump with routines/events/triggers. Nontransactional tables and concurrent schema changes require a maintenance window or suitable locking. Configure client authentication in root-only client option files.
-
-PostgreSQL uses pg_dumpall for one explicit cluster port, including roles and globals. Add an invocation for each cluster. It requires the postgres OS account and local database authentication. Cross-database consistency is not guaranteed while writes continue. Use version-compatible clients; validate restoration into a disposable cluster.
-
-MongoDB uses mongodump archive output. The baseline does not enable replica-set oplog capture or point-in-time recovery. Configure credentials without putting passwords in command arguments, and adapt the hook for the deployment's consistency requirements.
-
-SQLite must be exported using its online backup API/`.backup` command or while the application is stopped. Raw `.db` copies, particularly with WAL activity, are not a substitute. Add a root-owned custom hook with an explicit database path and export filename.
-
-## Containers and other applications
-
-`docker_volumes: true` captures Docker container inspection data, volume inspection data and named volume contents. It requires access to the Docker daemon. Inspection data may contain secrets. Running volume copies have crash-consistency limitations: quiesce applications during the backup window or use application export hooks and exclude raw database files. Compose definitions and bind mounts must be included explicitly. Rootless Docker, Podman, specialized mail stores and application-specific state require explicit paths/hooks; no deployment-specific adapter is shipped.
-
-A hook can export mail/service configuration or collect additional inventory. Do not blindly restore old machine networking or firewall settings. Metadata and backups are private runtime artifacts, not files to contribute to this repository.
+MariaDB logical dumps include routines/events/triggers; transactional consistency still depends on table engines and workload. PostgreSQL all-database and globals dumps are compressed separately. MongoDB's local archive export is not a point-in-time recovery system. Docker metadata can include secrets. Live volume, mail and SQLite copies need workload-specific consistency procedures. Inventory and SHA256SUMS cover exported metadata/dumps, not a complete checksum manifest of every source file.

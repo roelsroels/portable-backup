@@ -1,7 +1,0 @@
-{
-  "email_to": "",
-  "weekly_day": 5,
-  "capacity_paths": [
-    "/var/lib/portable-backup"
-  ]
-}

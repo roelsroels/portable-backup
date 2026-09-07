@@ -1,16 +1,8 @@
 [Unit]
-Description=Portable backup operation
-Wants=network-online.target
+Description=Portable Backup daily health report
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-UMask=0077
-Environment=HOME=/root
-Environment=XDG_CACHE_HOME=/var/cache/portable-backup
-ExecStart=/opt/portable-backup/bin/pb report
-TimeoutStartSec=infinity
-Nice=10
-IOSchedulingClass=best-effort
-IOSchedulingPriority=7
+ExecStart=/usr/local/bin/backup report --email-on-critical

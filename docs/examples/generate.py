@@ -1,55 +1,67 @@
-"""Rebuild synthetic HTML examples without contacting any live system."""
+"""Render examples through the actual installed command functions, with synthetic inputs."""
 from pathlib import Path
-import sys
+import sys, tempfile
 from html import escape
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'lib'))
-from report_email import render_html
-HERE = Path(__file__).resolve().parent
-SCREENS = {
- 'cli-report': ('Health report', '''$ sudo /opt/portable-backup/bin/pb report
-server-a: OK; snapshot age 2.0h; pipeline success
-server-b: CRITICAL; snapshot age 42.0h; pipeline failed
-Capacity /var/lib/portable-backup: OK; 24.0% used
-Capacity /mnt/backup-storage: ALERT; 85.0% used
+from email import policy
+from email.parser import Parser
+ROOT=Path(__file__).resolve().parents[2];HERE=Path(__file__).resolve().parent
+sys.path.insert(0,str(ROOT/'tests'))
+from test_installed import FUNCTIONS,STUBS,shell
+usage=shell(STUBS+FUNCTIONS+'usage').stdout
+report_fixture=r'''
+hostname() { echo coordinator.example.invalid; }
+date() { echo 'EXAMPLE-TIME'; }
+mountpoint() { return 0; }
+df() { printf 'Filesystem Size Used Available Use%% Mounted\nexample 1T 850G 150G 85%% /mnt/backup-storage\n'; }
+report_host() {
+cat <<REPORT
+Status             : OK
+Restic host        : $1
+Repository         : /mnt/backup-storage/backups/restic/$1
+Repository usage   : <example-size>
+Snapshots stored   : <example-count>
+Latest snapshot    : <snapshot-id>
+Latest timestamp   : <snapshot-time>
+Latest age         : 2h
+Latest data size   : <example-size>
+Maximum age        : 30h
 
-$ echo $?
-2'''),
- 'cli-restore': ('Inspect and recover', '''# List available snapshots, then inspect the selected snapshot.
-$ sudo /opt/portable-backup/bin/pb snapshots server-a
-$ sudo /opt/portable-backup/bin/pb ls server-a --snapshot latest
+Timer
+  Unit             : portable-backup-$1.timer
+  Active           : active
+  Enabled          : enabled
+  Next run         : <next-run>
 
-# Restore into a NEW directory for review.
-$ sudo /opt/portable-backup/bin/pb restore server-a \\
-    --snapshot latest \\
-    --target /var/tmp/recovery-review
-
-# Recover just one subtree into another NEW directory.
-$ sudo /opt/portable-backup/bin/pb restore server-a \\
-    --snapshot latest \\
-    --target /var/tmp/recovery-subset \\
-    --include '/filesystem/srv/**' '''),
- 'cli-operations': ('Routine operations', '''# Preview retention before changing stored history.
-$ sudo /opt/portable-backup/bin/pb retention-preview server-a
-
-# Run the full backup, retention and integrity-check pipeline.
-$ sudo /opt/portable-backup/bin/pb run server-a
-Backup complete
-
-# Read all repository data during a scheduled verification window.
-$ sudo /opt/portable-backup/bin/pb check server-a --read-data
-
-# Request an email report using the configured mail service.
-$ sudo /opt/portable-backup/bin/pb report --email''')
+Last service
+  Unit             : portable-backup@$1.service
+  Result           : success
+  Exit status      : 0
+  Finished         : <finished-time>
+REPORT
 }
-for name, (title, transcript) in SCREENS.items():
- (HERE / (name + '.txt')).write_text('ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.\n\n' + transcript + '\n')
- (HERE / (name + '.html')).write_text('''<!doctype html><html lang="en"><meta charset="utf-8"><title>''' + escape(title) + '''</title><body style="margin:0;padding:32px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1000px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · EXAMPLE</p><h1 style="color:#0f172a;font-size:28px;">''' + escape(title) + '''</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Terminal · synthetic demonstration</div><pre style="padding:24px;margin:0;color:#e2e8f0;font:15px/1.8 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">''' + escape(transcript) + '''</pre></div><p style="font-size:13px;color:#475569;">Illustrative commands and abbreviated output. No live host data is shown.</p></div></body></html>''')
-lines = [
- 'server-a: OK; snapshot age 2.0h; pipeline success',
- 'server-b: CRITICAL; snapshot age 42.0h; pipeline failed',
- 'Capacity /var/lib/portable-backup: OK; 24.0% used',
- 'Capacity /mnt/backup-storage: ALERT; 85.0% used',
-]
-(HERE / 'email-report.html').write_text(render_html(2, lines))
-print('Generated synthetic CLI pages and actual HTML email-template example')
+sendmail() { cat; }
+REPORT_EMAIL=operator@example.invalid
+REPORT_FROM=backup@coordinator.example.invalid
+REPORT_SUBJECT_PREFIX='[Portable Backup Report]'
+'''
+with tempfile.TemporaryDirectory() as t:
+ f=Path(t)/'report'
+ p=shell(STUBS+FUNCTIONS+report_fixture+'\ngenerate_report > "$1" || :\nsend_report_email "$1" "$REPORT_OVERALL_STATUS"',str(f))
+ if p.returncode:raise RuntimeError(p.stderr)
+ report=f.read_text()
+ message=Parser(policy=policy.default).parsestr(p.stdout)
+ (HERE/'email-report.html').write_text(message.get_body(preferencelist=('html',)).get_content())
+ (HERE/'cli-report.txt').write_text('$ sudo backup report\n'+report)
+# The original menu labels are taken directly from the shipped function.
+menu='\n'.join(['$ sudo backup restore','', '===========================================','        INTERACTIVE RESTORE ASSISTANT','===========================================','','Select the backup host:','','  1) server-a','  2) server-b','  q) Cancel','','Selection: q','Restore cancelled.'])
+for label in ['1) server-a','2) server-b','Restore cancelled.']:
+ assert label in FUNCTIONS
+screens={
+ 'cli-usage':('Command overview','$ sudo backup\n'+usage),
+ 'cli-restore':('Interactive restore',menu),
+ 'cli-report':('Backup report','$ sudo backup report\n'+report),
+}
+for name,(title,text) in screens.items():
+ (HERE/(name+'.txt')).write_text(text+'\n')
+ (HERE/(name+'.html')).write_text('''<!doctype html><html lang="en"><meta charset="utf-8"><title>'''+escape(title)+'''</title><body style="margin:0;padding:28px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1024px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · SYNTHETIC EXAMPLE</p><h1 style="color:#0f172a;font-size:26px;">'''+escape(title)+'''</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Original Bash command · anonymized demonstration</div><pre style="padding:22px;margin:0;color:#e2e8f0;font:14px/1.6 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">'''+escape(text)+'''</pre></div><p style="font-size:12px;color:#475569;">Synthetic placeholders; no live repository, timestamps or server data shown.</p></div></body></html>''')
+print('Original usage/report/HTML renderer examples generated')

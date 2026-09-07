@@ -1,39 +1,29 @@
-# Restore and verification
+# Restore and disaster recovery
+
+## Interactive restore
+
+Run `sudo backup restore` in an attached terminal. The original assistant selects host, snapshot and restore area, browses directories or accepts an exact logical path, shows a summary and requests confirmation. It restores with `--overwrite never`. The default destination is under `/var/tmp/backup-restore`; the alternate allowed root is `/tmp`. These are anonymized replacements for the installed restore-root literals.
+
+## Non-interactive restore and mount
 
 ```bash
-sudo /opt/portable-backup/bin/pb snapshots server-a
-sudo /opt/portable-backup/bin/pb ls server-a --snapshot latest
-sudo /opt/portable-backup/bin/pb restore server-a --snapshot latest --target /var/tmp/recovery-review
+sudo backup snapshots server-a
+sudo backup restore server-a latest /var/tmp/recovery-review
+sudo backup mount server-a /mnt/recovery-browser
 ```
 
-The target must be absolute and must not already exist, which prevents accidental in-place restoration. `latest` is filtered by source alias and framework tag. Use an actual snapshot identifier from your own snapshot listing to select an older point. No real identifiers are shipped.
+Explicitly pass `latest` or a snapshot ID. The installed non-interactive parser does not actually support omitting the snapshot positional argument. This path does not use the interactive browser's destination restrictions or `--overwrite never`; choose a new empty destination. Restored snapshots contain the original staged hierarchy. Inspect it before copying files into production. `mount` is a foreground Restic/FUSE browser; unmount with the appropriate FUSE unmount command when finished.
 
-Use `ls` to discover exact stored paths before filtering:
+Stop applications before applying recovered files, preserve current data for rollback, and verify numeric ownership, ACLs and extended attributes. Do not overlay an entire system filesystem on a running machine.
 
-```bash
-sudo /opt/portable-backup/bin/pb restore server-a --snapshot latest --target /var/tmp/recovery-subset --include '/filesystem/srv/**'
-```
+## Application recovery
 
-Restic include patterns follow its own matching rules. A partial restore's full manifest contains entries for files not selected; do not interpret those missing entries as corruption. Full exports have a manifest of regular files; it does not validate ownership, ACLs, symlinks or application consistency. Check these separately. See [Restic restore documentation](https://restic.readthedocs.io/en/stable/050_restore.html).
+Test compressed dumps with `zstd -t` before import. Restore MariaDB all-database SQL into a suitable clean instance. PostgreSQL all-database dumps already contain globals; do not import separate globals again without a specific recovery plan. The coordinator creates per-cluster exports, while the remote helper uses its configured/default cluster. MongoDB archives require mongorestore and deployment-appropriate consistency/authentication options.
 
-Inspect recovered data before copying it into production. Stop the affected application, preserve its current state for rollback, compare ownership/numeric IDs, ACLs and extended attributes, then copy only the selected recovered files to their intended location. Never copy the entire restored filesystem tree over a running host. Restore credentials and executables only from a trusted recovery point.
+Use compatible clients/server versions and test in isolation. Raw Docker volume copies and SQLite files may be inconsistent while applications are writing. Restore application-level exports where available; recreate containers/volumes, restore stopped data with correct numeric ownership, then validate application behavior. Do not assume an integrity check establishes application consistency.
 
-## Databases
+## Source or coordinator loss
 
-Use a disposable database instance first and review the SQL before importing. These examples assume you changed directory to the recovered tree:
+Keep offline copies of repository/password locations, credentials, private configs, verified SSH keys and these instructions. Rebuild a coordinator, install this distribution, recover its private configuration, reconnect the existing mounted storage and credentials, and run snapshots/verify/restore before enabling timers. Do not initialize the recovered repository.
 
-```bash
-zstd -dc exports/mariadb/all-databases.sql.zst | mariadb
-zstd -dc exports/postgresql/5432/all-databases.sql.zst | runuser -u postgres -- psql --set ON_ERROR_STOP=on -d postgres
-zstd -dc exports/mongodb/all-databases.archive.zst | mongorestore --archive
-```
-
-Run pipelines from a shell with `set -o pipefail`. Imports require suitable administrative access and compatible database versions. pg_dumpall includes globals and databases; pre-existing roles/databases can conflict. Restore into a deliberately prepared clean instance and review errors rather than ignoring them. Do not import a separate globals dump again. Adapt MongoDB consistency/authentication options to the actual deployment. These commands are recovery examples, not automatic production restore steps.
-
-For containers, rebuild definitions/images, recreate volumes, stop services, restore selected volume files with appropriate numeric ownership, then start and validate. Inspect configuration/environment secrets separately. Rootless mappings and alternate runtimes need their own procedures.
-
-## Acceptance drill
-
-Recover a known file and compare its bytes; test symlinks, hard links, modes, ACLs and xattrs on Linux. Import each enabled database into a disposable instance and query meaningful records. Launch the recovered application with networking isolated and verify its behavior. Record actual elapsed recovery time, missing prerequisites and outcomes in private operational records. Delete the disposable recovery tree when no longer needed.
-
-The original interactive restore browser was unavailable; this implementation supplies explicit list-and-restore commands instead.
+Rebuild a source with compatible accounts/applications, restore selected files and databases in isolation, validate, then cut over services and re-enroll SSH trust. Keep independent offsite/immutable copies in case a writable repository or coordinator is compromised. Rehearse both source and coordinator loss at least annually and after major changes, recording private recovery results and credential access.

@@ -1,1 +1,0 @@
-backup-reader ALL=(root) NOPASSWD: /opt/portable-backup/bin/pb-source stream

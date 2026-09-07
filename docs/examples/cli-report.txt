@@ -1,10 +1,72 @@
-ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.
+$ sudo backup report
+===========================================
+          PORTABLE BACKUP REPORT
+===========================================
 
-$ sudo /opt/portable-backup/bin/pb report
-server-a: OK; snapshot age 2.0h; pipeline success
-server-b: CRITICAL; snapshot age 42.0h; pipeline failed
-Capacity /var/lib/portable-backup: OK; 24.0% used
-Capacity /mnt/backup-storage: ALERT; 85.0% used
+Generated          : EXAMPLE-TIME
+Report server      : coordinator.example.invalid
 
-$ echo $?
-2
+Backup storage    : ALERT
+Storage capacity   : usage=85%, alert threshold=80%, available=150G
+Alert threshold    : >=80%
+Critical threshold : >=90%
+
+*** STORAGE CAPACITY ALERT ***
+Usage is 85%. Critical status begins at 90%.
+
+-------------------------------------------
+Host: server-a
+-------------------------------------------
+Status             : OK
+Restic host        : server-a
+Repository         : /mnt/backup-storage/backups/restic/server-a
+Repository usage   : <example-size>
+Snapshots stored   : <example-count>
+Latest snapshot    : <snapshot-id>
+Latest timestamp   : <snapshot-time>
+Latest age         : 2h
+Latest data size   : <example-size>
+Maximum age        : 30h
+
+Timer
+  Unit             : portable-backup-server-a.timer
+  Active           : active
+  Enabled          : enabled
+  Next run         : <next-run>
+
+Last service
+  Unit             : portable-backup@server-a.service
+  Result           : success
+  Exit status      : 0
+  Finished         : <finished-time>
+
+-------------------------------------------
+Host: server-b
+-------------------------------------------
+Status             : OK
+Restic host        : server-b
+Repository         : /mnt/backup-storage/backups/restic/server-b
+Repository usage   : <example-size>
+Snapshots stored   : <example-count>
+Latest snapshot    : <snapshot-id>
+Latest timestamp   : <snapshot-time>
+Latest age         : 2h
+Latest data size   : <example-size>
+Maximum age        : 30h
+
+Timer
+  Unit             : portable-backup-server-b.timer
+  Active           : active
+  Enabled          : enabled
+  Next run         : <next-run>
+
+Last service
+  Unit             : portable-backup@server-b.service
+  Result           : success
+  Exit status      : 0
+  Finished         : <finished-time>
+
+===========================================
+Overall status     : ALERT
+===========================================
+

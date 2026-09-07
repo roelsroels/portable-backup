@@ -1,16 +1,11 @@
 [Unit]
-Description=Portable backup operation
+Description=Portable Restic backup for %i
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-UMask=0077
-Environment=HOME=/root
-Environment=XDG_CACHE_HOME=/var/cache/portable-backup
-ExecStart=/opt/portable-backup/bin/pb run %i
-TimeoutStartSec=infinity
+ExecStart=/opt/portable-backup/bin/backup run %i
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7

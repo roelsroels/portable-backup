@@ -1,0 +1,25 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Command overview</title><body style="margin:0;padding:28px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1024px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · SYNTHETIC EXAMPLE</p><h1 style="color:#0f172a;font-size:26px;">Command overview</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Original Bash command · anonymized demonstration</div><pre style="padding:22px;margin:0;color:#e2e8f0;font:14px/1.6 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">$ sudo backup
+Usage:
+  backup init &lt;server-a|server-b&gt; --confirm-init
+  backup run &lt;server-a|server-b&gt;
+  backup status &lt;server-a|server-b&gt;
+  backup snapshots &lt;server-a|server-b&gt;
+  backup verify &lt;server-a|server-b&gt;
+  backup health &lt;server-a|server-b&gt;
+  backup restore
+      Opens the interactive restore selection menu.
+
+  backup restore &lt;server-a|server-b&gt; [snapshot] &lt;target-directory&gt;
+      Performs a non-interactive restore.
+  backup mount &lt;server-a|server-b&gt; &lt;mountpoint&gt;
+  backup unlock &lt;server-a|server-b&gt;
+
+  backup report
+  backup report --email
+  backup report --email &lt;recipient-address&gt;
+  backup report --email-on-critical
+  backup report --email-on-critical &lt;recipient-address&gt;
+
+Report email defaults are read from:
+  /etc/portable-backup/global.conf
+</pre></div><p style="font-size:12px;color:#475569;">Synthetic placeholders; no live repository, timestamps or server data shown.</p></div></body></html>

@@ -1,0 +1,3 @@
+# Additional filesystem paths included in the server-a backup
+/srv
+

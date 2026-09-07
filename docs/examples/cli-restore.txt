@@ -1,16 +1,14 @@
-ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.
+$ sudo backup restore
 
-# List available snapshots, then inspect the selected snapshot.
-$ sudo /opt/portable-backup/bin/pb snapshots server-a
-$ sudo /opt/portable-backup/bin/pb ls server-a --snapshot latest
+===========================================
+        INTERACTIVE RESTORE ASSISTANT
+===========================================
 
-# Restore into a NEW directory for review.
-$ sudo /opt/portable-backup/bin/pb restore server-a \
-    --snapshot latest \
-    --target /var/tmp/recovery-review
+Select the backup host:
 
-# Recover just one subtree into another NEW directory.
-$ sudo /opt/portable-backup/bin/pb restore server-a \
-    --snapshot latest \
-    --target /var/tmp/recovery-subset \
-    --include '/filesystem/srv/**' 
+  1) server-a
+  2) server-b
+  q) Cancel
+
+Selection: q
+Restore cancelled.

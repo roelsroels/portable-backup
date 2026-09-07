@@ -1,2 +1,0 @@
-# One additional absolute source path per line. Missing paths fail the export.
-# /opt/application

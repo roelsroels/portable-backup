@@ -1,0 +1,1781 @@
+#!/usr/bin/env bash
+
+if (( EUID != 0 )); then
+    printf '\nThis command must be run as root.\n\n' >&2
+    printf 'Run:\n  sudo backup' >&2
+
+    if (( $# > 0 )); then
+        printf ' %q' "$@" >&2
+    fi
+
+    printf '\n\n' >&2
+    exit 1
+fi
+
+source /opt/portable-backup/lib/common.sh
+
+usage() {
+    cat <<'USAGE'
+Usage:
+  backup init <server-a|server-b> --confirm-init
+  backup run <server-a|server-b>
+  backup status <server-a|server-b>
+  backup snapshots <server-a|server-b>
+  backup verify <server-a|server-b>
+  backup health <server-a|server-b>
+  backup restore
+      Opens the interactive restore selection menu.
+
+  backup restore <server-a|server-b> [snapshot] <target-directory>
+      Performs a non-interactive restore.
+  backup mount <server-a|server-b> <mountpoint>
+  backup unlock <server-a|server-b>
+
+  backup report
+  backup report --email
+  backup report --email <recipient-address>
+  backup report --email-on-critical
+  backup report --email-on-critical <recipient-address>
+
+Report email defaults are read from:
+  /etc/portable-backup/global.conf
+USAGE
+}
+
+human_bytes() {
+    local bytes="${1:-0}"
+
+    python3 - "$bytes" <<'PY'
+import sys
+
+try:
+    value = float(sys.argv[1])
+except (ValueError, IndexError):
+    print("unknown")
+    raise SystemExit(0)
+
+units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+
+for unit in units:
+    if value < 1024 or unit == units[-1]:
+        if unit == "B":
+            print(f"{int(value)} {unit}")
+        else:
+            print(f"{value:.1f} {unit}")
+        break
+    value /= 1024
+PY
+}
+
+validate_mail_header() {
+    local name="$1"
+    local value="$2"
+
+    if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        rb_die "Invalid newline in email setting: $name"
+    fi
+}
+
+report_host() {
+    local requested_host="$1"
+
+    local snapshots_json
+    local snapshot_count
+    local latest_id
+    local latest_time
+    local latest_epoch
+    local latest_local_time
+    local age_hours
+    local stats_json
+    local latest_bytes
+    local latest_size
+    local repository_size
+    local timer_unit
+    local service_unit
+    local timer_active
+    local timer_enabled
+    local next_run
+    local service_result
+    local service_exit_status
+    local service_last_exit
+    local host_status="OK"
+    local host_rc=0
+
+    rb_load_host "$requested_host"
+    rb_require_repo
+
+    snapshots_json="$(
+        restic snapshots \
+            --host "$HOST_NAME" \
+            --tag portable-backup \
+            --json
+    )"
+
+    mapfile -t snapshot_metadata < <(
+        python3 -c '
+import datetime
+import json
+import sys
+
+snapshots = json.load(sys.stdin)
+snapshots.sort(key=lambda item: item["time"])
+
+print(len(snapshots))
+
+if snapshots:
+    latest = snapshots[-1]
+    timestamp = latest["time"].replace("Z", "+00:00")
+
+    print(latest.get("short_id") or latest.get("id", "")[:8])
+    print(latest["time"])
+    print(int(datetime.datetime.fromisoformat(timestamp).timestamp()))
+else:
+    print("")
+    print("")
+    print(0)
+' <<<"$snapshots_json"
+    )
+
+    snapshot_count="${snapshot_metadata[0]:-0}"
+    latest_id="${snapshot_metadata[1]:-}"
+    latest_time="${snapshot_metadata[2]:-}"
+    latest_epoch="${snapshot_metadata[3]:-0}"
+
+    timer_unit="portable-backup-${requested_host}.timer"
+    service_unit="portable-backup@${requested_host}.service"
+
+    timer_active="$(
+        systemctl is-active "$timer_unit" 2>/dev/null || true
+    )"
+
+    timer_enabled="$(
+        systemctl is-enabled "$timer_unit" 2>/dev/null || true
+    )"
+
+    next_run="$(
+        systemctl show "$timer_unit" \
+            --property=NextElapseUSecRealtime \
+            --value 2>/dev/null || true
+    )"
+
+    service_result="$(
+        systemctl show "$service_unit" \
+            --property=Result \
+            --value 2>/dev/null || true
+    )"
+
+    service_exit_status="$(
+        systemctl show "$service_unit" \
+            --property=ExecMainStatus \
+            --value 2>/dev/null || true
+    )"
+
+    service_last_exit="$(
+        systemctl show "$service_unit" \
+            --property=ExecMainExitTimestamp \
+            --value 2>/dev/null || true
+    )"
+
+    repository_size="$(
+        du -sh "$RESTIC_REPOSITORY" 2>/dev/null |
+            awk 'NR == 1 { print $1 }'
+    )"
+    repository_size="${repository_size:-unknown}"
+
+    if [[ "$latest_epoch" == 0 || -z "$latest_id" ]]; then
+        host_status="CRITICAL"
+        host_rc=2
+
+        latest_local_time="not available"
+        age_hours="not available"
+        latest_size="not available"
+    else
+        latest_local_time="$(
+            date -d "$latest_time" '+%Y-%m-%d %H:%M:%S %Z'
+        )"
+
+        age_hours=$(( ($(date +%s) - latest_epoch) / 3600 ))
+
+        if (( age_hours > MAX_AGE_HOURS )); then
+            host_status="CRITICAL"
+            host_rc=2
+        fi
+
+        stats_json="$(
+            restic stats "$latest_id" \
+                --mode raw-data \
+                --json 2>/dev/null || true
+        )"
+
+        latest_bytes="$(
+            python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+    print(data.get("total_size", 0))
+except Exception:
+    print(0)
+' <<<"$stats_json"
+        )"
+
+        latest_size="$(human_bytes "$latest_bytes")"
+    fi
+
+    if [[ "$timer_active" != "active" ||
+          "$timer_enabled" != "enabled" ]]; then
+        host_status="CRITICAL"
+        host_rc=2
+    fi
+
+    if [[ "$service_result" == "failed" ||
+          "${service_exit_status:-0}" != 0 ]]; then
+        host_status="CRITICAL"
+        host_rc=2
+    fi
+
+    [[ -n "$next_run" && "$next_run" != "n/a" ]] ||
+        next_run="not scheduled"
+
+    [[ -n "$service_result" ]] ||
+        service_result="not run or unknown"
+
+    [[ -n "$service_last_exit" ]] ||
+        service_last_exit="not available"
+
+    cat <<HOST_REPORT
+Status             : $host_status
+Restic host        : $HOST_NAME
+Repository         : $RESTIC_REPOSITORY
+Repository usage   : $repository_size
+Snapshots stored   : $snapshot_count
+Latest snapshot    : ${latest_id:-not available}
+Latest timestamp   : $latest_local_time
+Latest age         : ${age_hours}h
+Latest data size   : $latest_size
+Maximum age        : ${MAX_AGE_HOURS}h
+
+Timer
+  Unit             : $timer_unit
+  Active           : $timer_active
+  Enabled          : $timer_enabled
+  Next run         : $next_run
+
+Last service
+  Unit             : $service_unit
+  Result           : $service_result
+  Exit status      : ${service_exit_status:-unknown}
+  Finished         : $service_last_exit
+HOST_REPORT
+
+    return "$host_rc"
+}
+
+REPORT_OVERALL_STATUS="UNKNOWN"
+REPORT_STORAGE_STATUS="UNKNOWN"
+REPORT_STORAGE_PERCENT=0
+REPORT_STORAGE_SIZE="unknown"
+REPORT_STORAGE_USED="unknown"
+REPORT_STORAGE_AVAILABLE="unknown"
+REPORT_STORAGE_ALERT_THRESHOLD=80
+REPORT_STORAGE_CRITICAL_THRESHOLD=90
+
+html_escape() {
+    python3 -c '
+import html
+import sys
+
+sys.stdout.write(html.escape(sys.stdin.read()))
+'
+}
+
+generate_report() {
+    local overall_rc=0
+    local overall_status="OK"
+    local storage_line
+    local storage_use_text
+    local report_output
+    local report_rc
+    local report_host_name
+
+    REPORT_STORAGE_ALERT_THRESHOLD="${STORAGE_ALERT_PERCENT:-80}"
+    REPORT_STORAGE_CRITICAL_THRESHOLD="${STORAGE_CRITICAL_PERCENT:-90}"
+
+    if [[ ! "$REPORT_STORAGE_ALERT_THRESHOLD" =~ ^[0-9]+$ ]] ||
+       (( REPORT_STORAGE_ALERT_THRESHOLD < 1 ||
+          REPORT_STORAGE_ALERT_THRESHOLD > 100 )); then
+        rb_die \
+            "STORAGE_ALERT_PERCENT must be an integer between 1 and 100"
+    fi
+
+    if [[ ! "$REPORT_STORAGE_CRITICAL_THRESHOLD" =~ ^[0-9]+$ ]] ||
+       (( REPORT_STORAGE_CRITICAL_THRESHOLD < 1 ||
+          REPORT_STORAGE_CRITICAL_THRESHOLD > 100 )); then
+        rb_die \
+            "STORAGE_CRITICAL_PERCENT must be an integer between 1 and 100"
+    fi
+
+    if (( REPORT_STORAGE_ALERT_THRESHOLD >=
+          REPORT_STORAGE_CRITICAL_THRESHOLD )); then
+        rb_die \
+            "STORAGE_ALERT_PERCENT must be lower than STORAGE_CRITICAL_PERCENT"
+    fi
+
+    printf '%s\n' '==========================================='
+    printf '%s\n' '          PORTABLE BACKUP REPORT'
+    printf '%s\n' '==========================================='
+    printf '\n'
+    printf 'Generated          : %s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'Report server      : %s\n' "$(hostname -f)"
+    printf '\n'
+
+    if mountpoint -q /mnt/backup-storage; then
+        read -r \
+            REPORT_STORAGE_SIZE \
+            REPORT_STORAGE_USED \
+            REPORT_STORAGE_AVAILABLE \
+            storage_use_text \
+            < <(
+                df -hP /mnt/backup-storage |
+                    awk 'NR == 2 {
+                        print $2, $3, $4, $5
+                    }'
+            )
+
+        REPORT_STORAGE_PERCENT="${storage_use_text%\%}"
+
+        if [[ ! "$REPORT_STORAGE_PERCENT" =~ ^[0-9]+$ ]]; then
+            REPORT_STORAGE_STATUS="CRITICAL"
+            overall_status="CRITICAL"
+            overall_rc=2
+            storage_line="Unable to determine storage usage"
+
+        elif (( REPORT_STORAGE_PERCENT >=
+                REPORT_STORAGE_CRITICAL_THRESHOLD )); then
+            REPORT_STORAGE_STATUS="CRITICAL"
+            overall_status="CRITICAL"
+            overall_rc=2
+
+            storage_line="$(
+                printf \
+                    'usage=%s%%, critical threshold=%s%%, available=%s' \
+                    "$REPORT_STORAGE_PERCENT" \
+                    "$REPORT_STORAGE_CRITICAL_THRESHOLD" \
+                    "$REPORT_STORAGE_AVAILABLE"
+            )"
+
+        elif (( REPORT_STORAGE_PERCENT >=
+                REPORT_STORAGE_ALERT_THRESHOLD )); then
+            REPORT_STORAGE_STATUS="ALERT"
+
+            if [[ "$overall_status" == "OK" ]]; then
+                overall_status="ALERT"
+            fi
+
+            overall_rc=2
+
+            storage_line="$(
+                printf \
+                    'usage=%s%%, alert threshold=%s%%, available=%s' \
+                    "$REPORT_STORAGE_PERCENT" \
+                    "$REPORT_STORAGE_ALERT_THRESHOLD" \
+                    "$REPORT_STORAGE_AVAILABLE"
+            )"
+
+        else
+            REPORT_STORAGE_STATUS="OK"
+
+            storage_line="$(
+                printf \
+                    'size=%s, used=%s, available=%s, usage=%s%%' \
+                    "$REPORT_STORAGE_SIZE" \
+                    "$REPORT_STORAGE_USED" \
+                    "$REPORT_STORAGE_AVAILABLE" \
+                    "$REPORT_STORAGE_PERCENT"
+            )"
+        fi
+    else
+        REPORT_STORAGE_STATUS="CRITICAL"
+        overall_status="CRITICAL"
+        overall_rc=2
+        storage_line="/mnt/backup-storage is not mounted"
+    fi
+
+    printf 'Backup storage    : %s\n' \
+        "$REPORT_STORAGE_STATUS"
+    printf 'Storage capacity   : %s\n' \
+        "$storage_line"
+    printf 'Alert threshold    : >=%s%%\n' \
+        "$REPORT_STORAGE_ALERT_THRESHOLD"
+    printf 'Critical threshold : >=%s%%\n' \
+        "$REPORT_STORAGE_CRITICAL_THRESHOLD"
+
+    case "$REPORT_STORAGE_STATUS" in
+        ALERT)
+            printf '\n'
+            printf '%s\n' \
+                '*** STORAGE CAPACITY ALERT ***'
+            printf \
+                'Usage is %s%%. Critical status begins at %s%%.\n' \
+                "$REPORT_STORAGE_PERCENT" \
+                "$REPORT_STORAGE_CRITICAL_THRESHOLD"
+            ;;
+
+        CRITICAL)
+            printf '\n'
+            printf '%s\n' \
+                '*** CRITICAL STORAGE CAPACITY ***'
+
+            if [[ "$REPORT_STORAGE_PERCENT" =~ ^[0-9]+$ ]] &&
+               (( REPORT_STORAGE_PERCENT > 0 )); then
+                printf \
+                    'Usage is %s%%, at or above the %s%% critical threshold.\n' \
+                    "$REPORT_STORAGE_PERCENT" \
+                    "$REPORT_STORAGE_CRITICAL_THRESHOLD"
+            else
+                printf '%s\n' \
+                    'The storage mount or capacity information is unavailable.'
+            fi
+            ;;
+    esac
+
+    for report_host_name in server-a server-b; do
+        printf '\n'
+        printf '%s\n' \
+            '-------------------------------------------'
+        printf 'Host: %s\n' "$report_host_name"
+        printf '%s\n' \
+            '-------------------------------------------'
+
+        if report_output="$(
+            report_host "$report_host_name" 2>&1
+        )"; then
+            report_rc=0
+        else
+            report_rc=$?
+        fi
+
+        printf '%s\n' "$report_output"
+
+        if (( report_rc != 0 )); then
+            overall_status="CRITICAL"
+            overall_rc=2
+        fi
+    done
+
+    REPORT_OVERALL_STATUS="$overall_status"
+
+    printf '\n'
+    printf '%s\n' '==========================================='
+    printf 'Overall status     : %s\n' \
+        "$REPORT_OVERALL_STATUS"
+    printf '%s\n' '==========================================='
+
+    return "$overall_rc"
+}
+
+send_report_email() {
+    local report_file="$1"
+    local overall_status="$2"
+    local requested_recipient="${3:-}"
+
+    local recipient
+    local sender
+    local subject_prefix
+    local subject
+    local mail_host
+    local boundary
+    local accent
+    local badge_background
+    local status_description
+    local escaped_report
+    local bar_width
+
+    require_programs sendmail hostname python3
+
+    recipient="${requested_recipient:-${REPORT_EMAIL:-}}"
+    sender="${REPORT_FROM:-root@$(hostname -f)}"
+    subject_prefix="${REPORT_SUBJECT_PREFIX:-[Portable Backup]}"
+    mail_host="$(hostname -s)"
+
+    [[ -n "$recipient" ]] ||
+        rb_die \
+            "No report recipient configured. Set REPORT_EMAIL in $GLOBAL or specify an address after --email"
+
+    validate_mail_header REPORT_EMAIL "$recipient"
+    validate_mail_header REPORT_FROM "$sender"
+    validate_mail_header REPORT_SUBJECT_PREFIX "$subject_prefix"
+
+    case "$overall_status" in
+        OK)
+            accent="#137333"
+            badge_background="#e6f4ea"
+            status_description="All monitored backups and storage checks are healthy."
+            subject="${subject_prefix} OK - ${mail_host}"
+            ;;
+        ALERT)
+            accent="#b06000"
+            badge_background="#fef7e0"
+            status_description="Attention required: storage usage is above the configured threshold."
+            subject="${subject_prefix} ALERT - ${mail_host}"
+            ;;
+        *)
+            accent="#b3261e"
+            badge_background="#fce8e6"
+            status_description="One or more backup or storage checks failed."
+            subject="${subject_prefix} CRITICAL - ${mail_host}"
+            ;;
+    esac
+
+    escaped_report="$(
+        html_escape <"$report_file"
+    )"
+
+    bar_width="$REPORT_STORAGE_PERCENT"
+
+    if [[ ! "$bar_width" =~ ^[0-9]+$ ]]; then
+        bar_width=0
+    elif (( bar_width > 100 )); then
+        bar_width=100
+    fi
+
+    boundary="portable-backup-$(date +%s)-$$"
+
+    {
+        printf 'From: %s\n' "$sender"
+        printf 'To: %s\n' "$recipient"
+        printf 'Subject: %s\n' "$subject"
+        printf 'MIME-Version: 1.0\n'
+        printf 'Content-Type: multipart/alternative; boundary="%s"\n' \
+            "$boundary"
+        printf '\n'
+
+        printf '%s\n' "--${boundary}"
+        printf '%s\n' \
+            'Content-Type: text/plain; charset=UTF-8'
+        printf '%s\n' \
+            'Content-Transfer-Encoding: 8bit'
+        printf '\n'
+        cat "$report_file"
+        printf '\n'
+
+        printf '%s\n' "--${boundary}"
+        printf '%s\n' \
+            'Content-Type: text/html; charset=UTF-8'
+        printf '%s\n' \
+            'Content-Transfer-Encoding: 8bit'
+        printf '\n'
+
+        cat <<HTML
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;background:#f4f5f7;font-family:Arial,Helvetica,sans-serif;color:#202124;">
+  <div style="max-width:760px;margin:0 auto;padding:24px 12px;">
+
+    <div style="background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #dadce0;box-shadow:0 2px 8px rgba(0,0,0,.08);">
+
+      <div style="padding:24px 28px;background:${accent};color:#ffffff;">
+        <div style="font-size:13px;letter-spacing:1.2px;text-transform:uppercase;opacity:.9;">
+          Portable Backup Framework
+        </div>
+        <div style="font-size:28px;font-weight:700;margin-top:6px;">
+          Backup Report
+        </div>
+        <div style="font-size:14px;margin-top:8px;opacity:.9;">
+          $(hostname -f) &middot; $(date '+%Y-%m-%d %H:%M:%S %Z')
+        </div>
+      </div>
+
+      <div style="padding:24px 28px;">
+
+        <div style="display:inline-block;padding:7px 14px;border-radius:999px;background:${badge_background};color:${accent};font-size:14px;font-weight:700;">
+          ${overall_status}
+        </div>
+
+        <p style="font-size:15px;line-height:1.6;margin:16px 0 24px;">
+          ${status_description}
+        </p>
+
+        <div style="border:1px solid #dadce0;border-radius:10px;padding:18px;margin-bottom:22px;">
+          <div style="font-size:18px;font-weight:700;margin-bottom:14px;">
+            Backup storage
+          </div>
+
+          <table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px;">
+            <tr>
+              <td style="padding:5px 0;color:#5f6368;">Status</td>
+              <td style="padding:5px 0;text-align:right;font-weight:700;color:${accent};">
+                ${REPORT_STORAGE_STATUS}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:#5f6368;">Usage</td>
+              <td style="padding:5px 0;text-align:right;font-weight:700;">
+                ${REPORT_STORAGE_PERCENT}%
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:#5f6368;">Available</td>
+              <td style="padding:5px 0;text-align:right;">
+                ${REPORT_STORAGE_AVAILABLE}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:#5f6368;">Alert threshold</td>
+              <td style="padding:5px 0;text-align:right;">
+                &ge;${REPORT_STORAGE_ALERT_THRESHOLD}%
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:5px 0;color:#5f6368;">Critical threshold</td>
+              <td style="padding:5px 0;text-align:right;">
+                &ge;${REPORT_STORAGE_CRITICAL_THRESHOLD}%
+              </td>
+            </tr>
+          </table>
+
+          <div style="height:12px;background:#e8eaed;border-radius:999px;overflow:hidden;margin-top:16px;">
+            <div style="height:12px;width:${bar_width}%;background:${accent};border-radius:999px;"></div>
+          </div>
+        </div>
+
+        <div style="font-size:18px;font-weight:700;margin-bottom:12px;">
+          Full report
+        </div>
+
+        <pre style="margin:0;padding:18px;background:#202124;color:#f1f3f4;border-radius:10px;overflow:auto;font-family:SFMono-Regular,Consolas,Liberation Mono,monospace;font-size:12px;line-height:1.55;white-space:pre-wrap;">${escaped_report}</pre>
+
+      </div>
+
+      <div style="padding:14px 28px;background:#f8f9fa;border-top:1px solid #dadce0;color:#5f6368;font-size:12px;">
+        Generated automatically by the Portable Backup Framework.
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
+HTML
+
+        printf '\n'
+        printf '%s\n' "--${boundary}--"
+    } | sendmail -t
+
+    printf '\nReport emailed to: %s\n' "$recipient"
+}
+
+
+rb_restore_path_exists() {
+    local snapshot="$1"
+    local wanted_path="$2"
+
+    restic ls --json "$snapshot" "$wanted_path" 2>/dev/null |
+        python3 -c '
+import json
+import sys
+
+wanted = sys.argv[1].rstrip("/") or "/"
+found = False
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+
+    if not raw_line:
+        continue
+
+    try:
+        item = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+
+    item_type = item.get("message_type") or item.get("struct_type")
+
+    if item_type != "node":
+        continue
+
+    path = item.get("path", "").rstrip("/") or "/"
+
+    if path == wanted:
+        found = True
+        break
+
+raise SystemExit(0 if found else 1)
+' "$wanted_path"
+}
+
+rb_restore_list_children() {
+    local snapshot="$1"
+    local current_path="$2"
+
+    restic ls --json "$snapshot" "$current_path" |
+        python3 -c '
+import json
+import sys
+
+current = sys.argv[1].rstrip("/") or "/"
+children = {}
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+
+    if not raw_line:
+        continue
+
+    try:
+        item = json.loads(raw_line)
+    except json.JSONDecodeError:
+        continue
+
+    item_type = item.get("message_type") or item.get("struct_type")
+
+    if item_type != "node":
+        continue
+
+    path = item.get("path", "")
+
+    if not path:
+        continue
+
+    path = path.rstrip("/") or "/"
+
+    if path == current:
+        continue
+
+    if current == "/":
+        relative = path.lstrip("/")
+    else:
+        prefix = current + "/"
+
+        if not path.startswith(prefix):
+            continue
+
+        relative = path[len(prefix):]
+
+    if not relative:
+        continue
+
+    first_component = relative.split("/", 1)[0]
+
+    if current == "/":
+        child_path = "/" + first_component
+    else:
+        child_path = current + "/" + first_component
+
+    if "/" in relative:
+        child_type = "dir"
+    else:
+        child_type = item.get("type", "unknown")
+
+    if child_path not in children or child_type == "dir":
+        children[child_path] = child_type
+
+for child_path, child_type in sorted(
+    children.items(),
+    key=lambda value: (
+        value[1] != "dir",
+        value[0].lower(),
+    ),
+):
+    print(f"{child_type}\t{child_path}")
+' "$current_path"
+}
+
+interactive_restore() {
+    local host
+    local choice
+    local snapshot_json
+    local snapshot
+    local snapshot_time
+    local snapshot_root
+    local filesystem_root
+    local browse_root
+    local browse_description
+    local current_path
+    local display_path
+    local selected_path
+    local selected_type
+    local relative_path
+    local custom_path
+    local actual_custom_path
+    local target
+    local default_target
+    local confirmation
+    local row
+    local node_type
+    local node_path
+    local option
+    local restore_option
+    local custom_option
+    local parent_option
+    local children_start
+    local child_index
+
+    local -a snapshot_rows=()
+    local -a child_types=()
+    local -a child_paths=()
+
+    require_programs \
+        restic \
+        python3 \
+        date \
+        find \
+        flock
+
+    if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+        rb_die "Interactive restore requires an attached terminal"
+    fi
+
+    printf '\n' >/dev/tty
+    printf '%s\n' \
+        '===========================================' \
+        '        INTERACTIVE RESTORE ASSISTANT' \
+        '===========================================' \
+        '' >/dev/tty
+
+    while true; do
+        printf '%s\n' \
+            'Select the backup host:' \
+            '' \
+            '  1) server-a' \
+            '  2) server-b' \
+            '  q) Cancel' \
+            '' >/dev/tty
+
+        printf 'Selection: ' >/dev/tty
+
+        IFS= read -r choice </dev/tty ||
+            rb_die "Unable to read host selection"
+
+        case "$choice" in
+            1)
+                host="server-a"
+                break
+                ;;
+
+            2)
+                host="server-b"
+                break
+                ;;
+
+            q|Q)
+                printf 'Restore cancelled.\n' >/dev/tty
+                return 0
+                ;;
+
+            *)
+                printf 'Invalid selection.\n\n' >/dev/tty
+                ;;
+        esac
+    done
+
+    rb_load_host "$host"
+    rb_require_repo
+
+    snapshot_json="$(
+        restic snapshots \
+            --host "$HOST_NAME" \
+            --tag portable-backup \
+            --json
+    )"
+
+    mapfile -t snapshot_rows < <(
+        python3 -c '
+import datetime
+import json
+import sys
+
+snapshots = json.load(sys.stdin)
+snapshots.sort(
+    key=lambda item: item["time"],
+    reverse=True,
+)
+
+for snapshot in snapshots:
+    snapshot_id = snapshot.get("id", "")
+    paths = snapshot.get("paths") or ["/"]
+    snapshot_root = paths[0].rstrip("/") or "/"
+
+    timestamp = datetime.datetime.fromisoformat(
+        snapshot["time"].replace("Z", "+00:00")
+    ).astimezone()
+
+    print(
+        snapshot_id
+        + "\t"
+        + timestamp.strftime("%Y-%m-%d %H:%M:%S %Z")
+        + "\t"
+        + snapshot_root
+    )
+' <<<"$snapshot_json"
+    )
+
+    if (( ${#snapshot_rows[@]} == 0 )); then
+        rb_die "No snapshots are available for $host"
+    fi
+
+    printf '\nAvailable snapshots for %s:\n\n' \
+        "$host" >/dev/tty
+
+    option=1
+
+    for row in "${snapshot_rows[@]}"; do
+        IFS=$'\t' read -r \
+            snapshot \
+            snapshot_time \
+            snapshot_root \
+            <<<"$row"
+
+        if (( option == 1 )); then
+            printf '  %2d) %s  %s  [latest]\n' \
+                "$option" \
+                "${snapshot:0:8}" \
+                "$snapshot_time" >/dev/tty
+        else
+            printf '  %2d) %s  %s\n' \
+                "$option" \
+                "${snapshot:0:8}" \
+                "$snapshot_time" >/dev/tty
+        fi
+
+        (( option += 1 ))
+    done
+
+    printf '   q) Cancel\n\n' >/dev/tty
+
+    while true; do
+        printf 'Select snapshot: ' >/dev/tty
+
+        IFS= read -r choice </dev/tty ||
+            rb_die "Unable to read snapshot selection"
+
+        if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+            printf 'Restore cancelled.\n' >/dev/tty
+            return 0
+        fi
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] &&
+           (( choice >= 1 &&
+              choice <= ${#snapshot_rows[@]} )); then
+
+            IFS=$'\t' read -r \
+                snapshot \
+                snapshot_time \
+                snapshot_root \
+                <<<"${snapshot_rows[choice-1]}"
+
+            break
+        fi
+
+        printf 'Invalid snapshot selection.\n' >/dev/tty
+    done
+
+    filesystem_root="${snapshot_root%/}/filesystem"
+
+    if rb_restore_path_exists \
+        "$snapshot" \
+        "$filesystem_root"
+    then
+        printf '\nSelect the restore area:\n\n' >/dev/tty
+        printf '%s\n' \
+            '  1) Original filesystem' \
+            '     Browse paths such as /etc, /home and /var' \
+            '' \
+            '  2) Complete prepared backup bundle' \
+            '     Browse filesystem, exports and metadata' \
+            '' \
+            '  q) Cancel' \
+            '' >/dev/tty
+
+        while true; do
+            printf 'Selection [1]: ' >/dev/tty
+
+            IFS= read -r choice </dev/tty ||
+                rb_die "Unable to read restore-area selection"
+
+            choice="${choice:-1}"
+
+            case "$choice" in
+                1)
+                    browse_root="$filesystem_root"
+                    browse_description="Original filesystem"
+                    break
+                    ;;
+
+                2)
+                    browse_root="$snapshot_root"
+                    browse_description="Complete prepared backup bundle"
+                    break
+                    ;;
+
+                q|Q)
+                    printf 'Restore cancelled.\n' >/dev/tty
+                    return 0
+                    ;;
+
+                *)
+                    printf 'Invalid selection.\n' >/dev/tty
+                    ;;
+            esac
+        done
+    else
+        browse_root="$snapshot_root"
+        browse_description="Snapshot contents"
+    fi
+
+    current_path="$browse_root"
+
+    while true; do
+        child_types=()
+        child_paths=()
+
+        while IFS=$'\t' read -r node_type node_path; do
+            [[ -n "$node_path" ]] || continue
+
+            child_types+=("$node_type")
+            child_paths+=("$node_path")
+        done < <(
+            rb_restore_list_children \
+                "$snapshot" \
+                "$current_path"
+        )
+
+        if [[ "$current_path" == "$browse_root" ]]; then
+            display_path="/"
+        else
+            display_path="${current_path#"$browse_root"}"
+
+            [[ "$display_path" == /* ]] ||
+                display_path="/$display_path"
+        fi
+
+        printf '\n' >/dev/tty
+        printf '%s\n' \
+            '-------------------------------------------' >/dev/tty
+        printf 'Snapshot : %s\n' "${snapshot:0:8}" >/dev/tty
+        printf 'Area     : %s\n' "$browse_description" >/dev/tty
+        printf 'Location : %s\n' "$display_path" >/dev/tty
+        printf '%s\n\n' \
+            '-------------------------------------------' >/dev/tty
+
+        option=1
+        restore_option="$option"
+
+        if [[ "$display_path" == "/" ]]; then
+            printf '  %2d) [RESTORE] Entire selected area\n' \
+                "$option" >/dev/tty
+        else
+            printf '  %2d) [RESTORE] This path: %s\n' \
+                "$option" \
+                "$display_path" >/dev/tty
+        fi
+
+        (( option += 1 ))
+
+        custom_option="$option"
+
+        printf '  %2d) [CUSTOM ] Enter an exact logical path\n' \
+            "$option" >/dev/tty
+
+        (( option += 1 ))
+
+        parent_option=0
+
+        if [[ "$current_path" != "$browse_root" ]]; then
+            parent_option="$option"
+
+            printf '  %2d) [..     ] Go to parent directory\n' \
+                "$option" >/dev/tty
+
+            (( option += 1 ))
+        fi
+
+        children_start="$option"
+        child_index=0
+
+        while (( child_index < ${#child_paths[@]} )); do
+            node_type="${child_types[child_index]}"
+            node_path="${child_paths[child_index]}"
+
+            if [[ "$node_type" == "dir" ]]; then
+                printf '  %2d) [DIR    ] %s/\n' \
+                    "$option" \
+                    "$(basename "$node_path")" >/dev/tty
+            else
+                printf '  %2d) [FILE   ] %s\n' \
+                    "$option" \
+                    "$(basename "$node_path")" >/dev/tty
+            fi
+
+            (( option += 1 ))
+            (( child_index += 1 ))
+        done
+
+        printf '   q) Cancel\n\n' >/dev/tty
+        printf 'Selection: ' >/dev/tty
+
+        IFS= read -r choice </dev/tty ||
+            rb_die "Unable to read path selection"
+
+        if [[ "$choice" == "q" || "$choice" == "Q" ]]; then
+            printf 'Restore cancelled.\n' >/dev/tty
+            return 0
+        fi
+
+        if [[ ! "$choice" =~ ^[0-9]+$ ]]; then
+            printf 'Invalid selection.\n' >/dev/tty
+            continue
+        fi
+
+        if (( choice == restore_option )); then
+            selected_path="$current_path"
+            selected_type="dir"
+            break
+        fi
+
+        if (( choice == custom_option )); then
+            printf 'Exact logical path, for example /etc/nginx: ' \
+                >/dev/tty
+
+            IFS= read -r custom_path </dev/tty ||
+                rb_die "Unable to read custom path"
+
+            [[ -n "$custom_path" ]] || {
+                printf 'No path entered.\n' >/dev/tty
+                continue
+            }
+
+            if [[ "$custom_path" != /* ]]; then
+                custom_path="/$custom_path"
+            fi
+
+            if [[ "$custom_path" =~ (^|/)\.\.(/|$) ]]; then
+                printf 'Parent-directory components are not allowed.\n' \
+                    >/dev/tty
+                continue
+            fi
+
+            custom_path="${custom_path%/}"
+            [[ -n "$custom_path" ]] || custom_path="/"
+
+            if [[ "$custom_path" == "/" ]]; then
+                actual_custom_path="$browse_root"
+            else
+                actual_custom_path="${browse_root%/}${custom_path}"
+            fi
+
+            if ! rb_restore_path_exists \
+                "$snapshot" \
+                "$actual_custom_path"
+            then
+                printf \
+                    'Path does not exist in this snapshot: %s\n' \
+                    "$custom_path" >/dev/tty
+                continue
+            fi
+
+            selected_path="$actual_custom_path"
+            selected_type="unknown"
+            break
+        fi
+
+        if (( parent_option != 0 &&
+              choice == parent_option )); then
+            current_path="$(dirname "$current_path")"
+
+            if [[ "$current_path" != "$browse_root" &&
+                  "$current_path" != "$browse_root/"* ]]; then
+                current_path="$browse_root"
+            fi
+
+            continue
+        fi
+
+        child_index=$(( choice - children_start ))
+
+        if (( child_index < 0 ||
+              child_index >= ${#child_paths[@]} )); then
+            printf 'Invalid selection.\n' >/dev/tty
+            continue
+        fi
+
+        node_type="${child_types[child_index]}"
+        node_path="${child_paths[child_index]}"
+
+        if [[ "$node_type" == "dir" ]]; then
+            current_path="$node_path"
+        else
+            selected_path="$node_path"
+            selected_type="$node_type"
+            break
+        fi
+    done
+
+    if [[ "$selected_path" == "$browse_root" ]]; then
+        relative_path="/"
+    else
+        relative_path="${selected_path#"$browse_root"}"
+
+        [[ "$relative_path" == /* ]] ||
+            relative_path="/$relative_path"
+    fi
+
+    default_target="$(
+        printf \
+            '/var/tmp/backup-restore/restore-%s-%s' \
+            "$host" \
+            "$(date +%Y%m%d-%H%M%S)"
+    )"
+
+    printf '\nRestore destination\n' >/dev/tty
+    printf 'Default: %s\n' "$default_target" >/dev/tty
+    printf 'Press Enter for the default, or enter another path\n' \
+        >/dev/tty
+    printf 'under /var/tmp/backup-restore or /tmp: ' >/dev/tty
+
+    IFS= read -r target </dev/tty ||
+        rb_die "Unable to read restore target"
+
+    target="${target:-$default_target}"
+
+    if [[ "$target" != /* ]]; then
+        rb_die "Restore target must be an absolute path"
+    fi
+
+    case "$target" in
+        /var/tmp/backup-restore/*|/tmp/*)
+            ;;
+
+        *)
+            rb_die \
+                "Interactive restores are restricted to /var/tmp/backup-restore or /tmp"
+            ;;
+    esac
+
+    if [[ -e "$target" ]] &&
+       [[ -n "$(
+           find "$target" \
+               -mindepth 1 \
+               -maxdepth 1 \
+               -print \
+               -quit 2>/dev/null
+       )" ]]; then
+        rb_die \
+            "Restore target already exists and is not empty: $target"
+    fi
+
+    printf '\n' >/dev/tty
+    printf '%s\n' \
+        '===========================================' \
+        '             RESTORE SUMMARY' \
+        '===========================================' >/dev/tty
+    printf 'Host       : %s\n' "$host" >/dev/tty
+    printf 'Snapshot   : %s\n' "${snapshot:0:8}" >/dev/tty
+    printf 'Created    : %s\n' "$snapshot_time" >/dev/tty
+    printf 'Area       : %s\n' "$browse_description" >/dev/tty
+    printf 'Selection  : %s\n' "$relative_path" >/dev/tty
+    printf 'Destination: %s\n' "$target" >/dev/tty
+    printf '%s\n\n' \
+        '===========================================' >/dev/tty
+
+    printf 'Proceed with restore? [y/N]: ' >/dev/tty
+
+    IFS= read -r confirmation </dev/tty ||
+        rb_die "Unable to read confirmation"
+
+    case "$confirmation" in
+        y|Y|yes|YES)
+            ;;
+
+        *)
+            printf 'Restore cancelled.\n' >/dev/tty
+            return 0
+            ;;
+    esac
+
+    mkdir -p "$target"
+
+    # Make the restore container accessible to the user who invoked sudo,
+    # without changing ownership of restored files below it.
+       if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != "root" ]]; then
+        sudo_group="$(id -gn "$SUDO_USER")"
+        chown "$SUDO_USER:$sudo_group" "$target"
+        chmod 0750 "$target"
+       fi
+
+   rb_lock "$host"
+
+    rb_log \
+        "Restoring snapshot ${snapshot:0:8}, path $relative_path, to $target"
+
+    if [[ "$relative_path" == "/" ]]; then
+        restic restore \
+            "${snapshot}:${browse_root}" \
+            --target "$target" \
+            --overwrite never
+    else
+        restic restore \
+            "${snapshot}:${browse_root}" \
+            --target "$target" \
+            --include "$relative_path" \
+            --overwrite never
+    fi
+
+    printf '\n'
+    printf 'Restore completed successfully.\n'
+    printf 'Restored data: %s\n' "$target"
+}
+
+cmd="${1:-}"
+
+[[ -n "$cmd" ]] || {
+    usage
+    exit 1
+}
+
+if [[ "$cmd" == "report" ]]; then
+    require_programs \
+        restic \
+        python3 \
+        systemctl \
+        hostname \
+        date \
+        df \
+        du \
+        mountpoint
+
+    email_mode="never"
+    email_recipient=""
+
+    case "${2:-}" in
+        "")
+            ;;
+
+        --email)
+            email_mode="always"
+            email_recipient="${3:-}"
+            ;;
+
+        --email-on-critical)
+            email_mode="critical"
+            email_recipient="${3:-}"
+            ;;
+
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+
+    if (( $# > 3 )); then
+        usage
+        exit 1
+    fi
+
+    report_file="$(mktemp /tmp/portable-backup-report.XXXXXX)"
+    trap 'rm -f -- "$report_file"' EXIT
+
+    if generate_report >"$report_file"; then
+        report_rc=0
+    else
+        report_rc=$?
+    fi
+
+    cat "$report_file"
+
+    overall_status="${REPORT_OVERALL_STATUS:-CRITICAL}"
+
+    case "$email_mode" in
+        always)
+            send_report_email \
+                "$report_file" \
+                "$overall_status" \
+                "$email_recipient"
+            ;;
+
+        critical)
+            if [[ "$overall_status" == "CRITICAL" ]]; then
+                send_report_email \
+                    "$report_file" \
+                    "$overall_status" \
+                    "$email_recipient"
+            else
+                printf '\nNo email sent: overall status is %s.\n' \
+                    "$overall_status"
+            fi
+            ;;
+
+        never)
+            ;;
+    esac
+
+    exit "$report_rc"
+fi
+
+if [[ "$cmd" == "restore" && $# -eq 1 ]]; then
+    interactive_restore
+    exit 0
+fi
+
+host="${2:-}"
+
+[[ -n "$host" ]] || {
+    usage
+    exit 1
+}
+
+rb_load_host "$host"
+
+case "$cmd" in
+init)
+    require_programs restic openssl find
+
+    if [[ "${3:-}" != "--confirm-init" || $# -ne 3 ]]; then
+        cat >&2 <<INIT_WARNING
+
+DANGER: repository initialization is a destructive administrative action.
+
+It may create a new repository and password at:
+
+  Repository    : $RESTIC_REPOSITORY
+  Password file : $RESTIC_PASSWORD_FILE
+
+To continue, use:
+
+  sudo backup init $host --confirm-init
+
+INIT_WARNING
+        exit 1
+    fi
+
+    # Refuse to initialize onto the local filesystem when the Backup
+    # storage volume should be mounted at /mnt/backup-storage.
+    rb_require_storage_mount
+
+    repository_parent="$(dirname "$RESTIC_REPOSITORY")"
+    password_parent="$(dirname "$RESTIC_PASSWORD_FILE")"
+
+    # An accessible repository is already initialized. Do nothing.
+    if [[ -f "$RESTIC_PASSWORD_FILE" ]] &&
+       restic snapshots >/dev/null 2>&1; then
+        printf 'Repository is already initialized and accessible:
+  %s
+' \
+            "$RESTIC_REPOSITORY"
+        exit 0
+    fi
+
+    # Never generate a new password when repository data already exists.
+    if [[ -d "$RESTIC_REPOSITORY" ]] &&
+       [[ -n "$(
+           find "$RESTIC_REPOSITORY" \
+               -mindepth 1 \
+               -maxdepth 1 \
+               -print \
+               -quit 2>/dev/null
+       )" ]]; then
+        rb_die \
+            "Repository path is not empty but cannot be opened. Refusing initialization: $RESTIC_REPOSITORY"
+    fi
+
+    # Refuse unusual existing path types such as files or symlinks.
+    if [[ -e "$RESTIC_REPOSITORY" &&
+          ! -d "$RESTIC_REPOSITORY" ]]; then
+        rb_die \
+            "Repository path exists but is not a directory: $RESTIC_REPOSITORY"
+    fi
+
+    if [[ -e "$RESTIC_PASSWORD_FILE" &&
+          ! -f "$RESTIC_PASSWORD_FILE" ]]; then
+        rb_die \
+            "Password path exists but is not a regular file: $RESTIC_PASSWORD_FILE"
+    fi
+
+    printf '
+'
+    printf '%s
+' '==========================================='
+    printf '%s
+' '      RESTIC REPOSITORY INITIALIZATION'
+    printf '%s
+' '==========================================='
+    printf 'Host          : %s
+' "$host"
+    printf 'Repository    : %s
+' "$RESTIC_REPOSITORY"
+    printf 'Password file : %s
+' "$RESTIC_PASSWORD_FILE"
+    printf '
+'
+    printf '%s
+' \
+        'This operation is only appropriate for a brand-new repository.'
+    printf '
+'
+
+    expected_confirmation="INITIALIZE $host"
+
+    if [[ ! -r /dev/tty ]]; then
+        rb_die \
+            "Interactive confirmation is required; no terminal is available"
+    fi
+
+    printf 'Type exactly "%s" to continue: ' \
+        "$expected_confirmation" >/dev/tty
+
+    IFS= read -r entered_confirmation </dev/tty || {
+        rb_die "Unable to read confirmation"
+    }
+
+    if [[ "$entered_confirmation" != "$expected_confirmation" ]]; then
+        rb_die "Confirmation did not match; initialization cancelled"
+    fi
+
+    mkdir -p "$repository_parent"
+    install -d -m 0700 "$password_parent"
+
+    if [[ ! -e "$RESTIC_PASSWORD_FILE" ]]; then
+        (
+            umask 077
+            openssl rand -base64 48 >"$RESTIC_PASSWORD_FILE"
+        )
+        chmod 0600 "$RESTIC_PASSWORD_FILE"
+        password_created="yes"
+    else
+        password_created="no"
+
+        [[ -r "$RESTIC_PASSWORD_FILE" ]] ||
+            rb_die \
+                "Existing password file is not readable: $RESTIC_PASSWORD_FILE"
+    fi
+
+    if restic init; then
+        printf '
+Repository initialized successfully:
+  %s
+' \
+            "$RESTIC_REPOSITORY"
+    else
+        init_rc=$?
+
+        if [[ "$password_created" == "yes" ]]; then
+            rm -f -- "$RESTIC_PASSWORD_FILE"
+            rb_log \
+                "Removed newly generated password because initialization failed"
+        fi
+
+        rb_die "Restic initialization failed with exit code $init_rc"
+    fi
+    ;;
+
+run)
+    if [[ "$MODE" == "remote" ]]; then
+        require_programs restic rsync ssh sha256sum flock
+    else
+        require_programs restic rsync sha256sum flock
+    fi
+
+    rb_lock "$host"
+    rb_require_repo
+
+    stage="${STAGING_ROOT}/${host}/source"
+
+    rm -rf -- "$stage"
+    mkdir -p "$stage"
+
+    if [[ "$MODE" == "remote" ]]; then
+        ssh_args=(
+            -i "$REMOTE_SSH_KEY"
+            -o BatchMode=yes
+            -o ConnectTimeout=20
+        )
+
+        rsync_ssh="ssh -i $REMOTE_SSH_KEY -o BatchMode=yes -o ConnectTimeout=20"
+
+        rb_log "Preparing remote export on $host"
+        ssh "${ssh_args[@]}" "$REMOTE" "$REMOTE_PREPARE"
+
+        rb_log "Pulling remote export to local ext4 staging"
+        rsync \
+            -aHAX \
+            --numeric-ids \
+            --delete \
+            --delete-delay \
+            --partial \
+            -e "$rsync_ssh" \
+            "${REMOTE}:${REMOTE_EXPORT}" \
+            "$stage/"
+
+        if [[ "${REMOTE_CLEAN_AFTER_PULL:-no}" == "yes" ]]; then
+            ssh "${ssh_args[@]}" "$REMOTE" "$REMOTE_CLEAN"
+        fi
+    else
+        rb_log "Preparing local export on $host"
+
+        local_export="$(
+            /opt/portable-backup/bin/rb-prepare-local "$host" |
+                tail -n 1
+        )"
+
+        rsync \
+            -aHAX \
+            --numeric-ids \
+            --delete \
+            --delete-delay \
+            "$local_export/" \
+            "$stage/"
+    fi
+
+    rb_log "Verifying prepared export"
+    (
+        cd "$stage"
+        sha256sum -c SHA256SUMS
+    )
+
+    rb_log "Writing encrypted deduplicated Restic snapshot"
+    restic backup "$stage" \
+        --host "$HOST_NAME" \
+        --tag portable-backup \
+        --tag "$HOST_NAME" \
+        --one-file-system \
+        --exclude-caches
+
+    rb_log "Applying retention"
+    restic forget \
+        --host "$HOST_NAME" \
+        --tag portable-backup \
+        --keep-daily "$KEEP_DAILY" \
+        --keep-weekly "$KEEP_WEEKLY" \
+        --keep-monthly "$KEEP_MONTHLY" \
+        --prune
+
+    rb_log "Running repository integrity check"
+    restic check \
+        --read-data-subset="$RESTIC_CHECK_SUBSET"
+
+    rm -rf -- "$stage"
+    rb_log "Backup complete"
+    ;;
+
+status|snapshots)
+    require_programs restic
+
+    rb_require_repo
+
+    restic snapshots \
+        --host "$HOST_NAME" \
+        --tag portable-backup
+    ;;
+
+verify)
+    require_programs restic
+
+    rb_require_repo
+
+    restic check \
+        --read-data-subset="$RESTIC_CHECK_SUBSET"
+    ;;
+
+health)
+    require_programs restic python3
+
+    rb_require_repo
+
+    json="$(
+        restic snapshots \
+            --host "$HOST_NAME" \
+            --tag portable-backup \
+            --json
+    )"
+
+    latest_epoch="$(
+        python3 -c '
+import datetime
+import json
+import sys
+
+snapshots = json.load(sys.stdin)
+snapshots.sort(key=lambda item: item["time"])
+
+if not snapshots:
+    print(0)
+else:
+    timestamp = snapshots[-1]["time"].replace("Z", "+00:00")
+    print(int(datetime.datetime.fromisoformat(timestamp).timestamp()))
+' <<<"$json"
+    )"
+
+    if [[ "$latest_epoch" == 0 ]]; then
+        echo "CRITICAL: no snapshots"
+        exit 2
+    fi
+
+    age=$(( ($(date +%s) - latest_epoch) / 3600 ))
+
+    echo "Host: $host; latest snapshot age: ${age}h"
+
+    if (( age > MAX_AGE_HOURS )); then
+        echo "CRITICAL: stale backup"
+        exit 2
+    fi
+
+    if ! restic check >/dev/null; then
+        echo "CRITICAL: repository check failed"
+        exit 2
+    fi
+
+    echo "OK"
+    ;;
+
+restore)
+    require_programs restic
+
+    rb_require_repo
+
+    snapshot="${3:-latest}"
+    target="${4:-}"
+
+    [[ -n "$target" ]] ||
+        rb_die "Restore target directory is required"
+
+    mkdir -p "$target"
+
+    restic restore "$snapshot" \
+        --host "$HOST_NAME" \
+        --target "$target"
+    ;;
+
+mount)
+    require_programs restic
+
+    rb_require_repo
+
+    mountpoint_path="${3:-}"
+
+    [[ -n "$mountpoint_path" ]] ||
+        rb_die "Mountpoint is required"
+
+    mkdir -p "$mountpoint_path"
+
+    exec restic mount "$mountpoint_path" \
+        --host "$HOST_NAME"
+    ;;
+
+unlock)
+    require_programs restic
+
+    rb_require_repo
+    restic unlock
+    ;;
+
+*)
+    usage
+    exit 1
+    ;;
+esac

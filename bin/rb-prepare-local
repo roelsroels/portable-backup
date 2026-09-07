@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+source /opt/portable-backup/lib/common.sh
+
+host="${1:?host required}"
+rb_load_host "$host"
+[[ "$MODE" == local ]] || rb_die "$host is not configured as local"
+
+stage="${STAGING_ROOT}/${host}"
+new="${stage}/export.new"
+published="${stage}/export"
+
+rm -rf "$new"
+mkdir -p "$new"/{filesystem,exports,metadata,docker-volumes}
+
+exclude_args=()
+for x in "${EXCLUDE_PATHS[@]}"; do exclude_args+=(--exclude="$x/***"); done
+
+run_rsync_live_copy() {
+  local rc=0
+
+  rsync "$@" || rc=$?
+
+  case "$rc" in
+    0)
+      return 0
+      ;;
+    24)
+      rb_log "WARNING: rsync reported source files that vanished during a live copy; continuing"
+      return 0
+      ;;
+    *)
+      rb_log "ERROR: rsync failed with exit status $rc"
+      return "$rc"
+      ;;
+  esac
+}
+
+copy_one(){
+  local p="$1"
+  [[ -e "$p" || -L "$p" ]] || return 0
+  rb_log "Copying $p"
+  run_rsync_live_copy \
+    -aHAX --numeric-ids --one-file-system --relative \
+    "${exclude_args[@]}" "$p" "$new/filesystem/"
+}
+
+for p in "${INCLUDE_PATHS[@]}"; do copy_one "$p"; done
+
+if [[ "${BACKUP_LEGACY_DOCKER_BACKUPS:-no}" == yes ]]; then
+  for p in "${EXTRA_PATHS[@]}"; do copy_one "$p"; done
+fi
+
+rb_log "Capturing system inventory"
+dpkg --get-selections > "$new/metadata/dpkg-selections.txt"
+apt-mark showmanual | sort > "$new/metadata/apt-manual.txt"
+snap list > "$new/metadata/snap-list.txt" 2>&1 || true
+flatpak list > "$new/metadata/flatpak-list.txt" 2>&1 || true
+systemctl list-unit-files --no-pager > "$new/metadata/systemd-unit-files.txt"
+systemctl list-units --type=service --all --no-pager > "$new/metadata/systemd-services.txt"
+systemctl list-timers --all --no-pager > "$new/metadata/systemd-timers.txt"
+ip -brief address > "$new/metadata/ip-addresses.txt"
+ip route > "$new/metadata/ip-routes.txt"
+ss -lntup > "$new/metadata/listening-sockets.txt" 2>&1 || true
+nft list ruleset > "$new/metadata/nftables.conf" 2>&1 || true
+ufw status verbose > "$new/metadata/ufw-status.txt" 2>&1 || true
+findmnt > "$new/metadata/findmnt.txt"
+lsblk -f > "$new/metadata/lsblk.txt"
+lscpu > "$new/metadata/lscpu.txt"
+free -h > "$new/metadata/memory.txt"
+uname -a > "$new/metadata/uname.txt"
+cat /etc/os-release > "$new/metadata/os-release.txt"
+cp -a /etc/fstab "$new/metadata/fstab" 2>/dev/null || true
+find /etc/systemd/system -maxdepth 4 \( -type f -o -type l \) \
+  -printf '%p -> %l\n' > "$new/metadata/custom-systemd.txt" 2>/dev/null || true
+
+for u in $(awk -F: '$3>=1000 && $7 !~ /(nologin|false)$/ {print $1}' /etc/passwd); do
+  crontab -u "$u" -l > "$new/metadata/crontab-${u}.txt" 2>&1 || true
+done
+crontab -u root -l > "$new/metadata/crontab-root.txt" 2>&1 || true
+
+if rb_have nginx; then nginx -T > "$new/metadata/nginx-effective.conf" 2>&1 || true; fi
+if rb_have postconf; then postconf -n > "$new/metadata/postfix-effective.conf" 2>&1 || true; fi
+
+if [[ "$BACKUP_MARIADB" != no ]] &&
+   rb_have mariadb-dump &&
+   systemctl is-active --quiet mariadb; then
+  rb_log "Dumping MariaDB"
+  mkdir -p "$new/exports/mariadb"
+  mariadb-dump --all-databases --single-transaction --quick \
+    --routines --events --triggers --hex-blob --default-character-set=utf8mb4 |
+    zstd -T0 -"${ZSTD_LEVEL}" -o "$new/exports/mariadb/all-databases.sql.zst"
+  zstd -t "$new/exports/mariadb/all-databases.sql.zst"
+  mariadb -NBe 'SHOW DATABASES' > "$new/exports/mariadb/storagebase-list.txt"
+fi
+
+if [[ "$BACKUP_POSTGRESQL" != no ]] &&
+   rb_have pg_lsclusters &&
+   id postgres >/dev/null 2>&1; then
+  rb_log "Dumping online PostgreSQL clusters"
+  mkdir -p "$new/exports/postgresql"
+  while read -r ver cluster port status owner data log; do
+    [[ "$status" == online ]] || continue
+    d="$new/exports/postgresql/${ver}-${cluster}"
+    mkdir -p "$d"
+    sudo -u postgres pg_dumpall -p "$port" --globals-only |
+      zstd -T0 -"${ZSTD_LEVEL}" -o "$d/globals.sql.zst"
+    sudo -u postgres pg_dumpall -p "$port" |
+      zstd -T0 -"${ZSTD_LEVEL}" -o "$d/all-databases.sql.zst"
+    zstd -t "$d/globals.sql.zst"
+    zstd -t "$d/all-databases.sql.zst"
+  done < <(pg_lsclusters --no-header)
+  pg_lsclusters > "$new/exports/postgresql/clusters.txt" 2>&1 || true
+fi
+
+if [[ "$BACKUP_MONGODB" != no ]] &&
+   rb_have mongodump &&
+   systemctl is-active --quiet mongod; then
+  rb_log "Dumping MongoDB"
+  mkdir -p "$new/exports/mongodb"
+  mongodump --archive |
+    zstd -T0 -"${ZSTD_LEVEL}" -o "$new/exports/mongodb/all-databases.archive.zst"
+  zstd -t "$new/exports/mongodb/all-databases.archive.zst"
+fi
+
+if [[ "$BACKUP_DOCKER" != no ]] &&
+   rb_have docker &&
+   systemctl is-active --quiet docker; then
+  rb_log "Capturing Docker metadata and named volumes"
+  mkdir -p "$new/exports/docker"
+  docker info > "$new/exports/docker/info.txt" 2>&1 || true
+  docker ps -a --no-trunc > "$new/exports/docker/containers.txt"
+  docker image ls --digests --no-trunc > "$new/exports/docker/images.txt"
+  docker volume ls > "$new/exports/docker/volumes.txt"
+  docker network ls > "$new/exports/docker/networks.txt"
+
+  for id in $(docker ps -aq); do
+    name="$(docker inspect --format '{{.Name}}' "$id" | sed 's#^/##')"
+    docker inspect "$id" > "$new/exports/docker/container-${name}.json"
+  done
+
+  for net in $(docker network ls -q); do
+    docker network inspect "$net" > "$new/exports/docker/network-${net}.json" || true
+  done
+
+  for vol in $(docker volume ls -q); do
+    mp="$(docker volume inspect --format '{{.Mountpoint}}' "$vol")"
+    [[ -d "$mp" ]] || continue
+    mkdir -p "$new/docker-volumes/$vol"
+    run_rsync_live_copy \
+      -aHAX --numeric-ids "$mp/" "$new/docker-volumes/$vol/"
+    docker volume inspect "$vol" > "$new/exports/docker/volume-${vol}.json"
+  done
+
+  find /home /root /opt /srv /etc -xdev -type f \
+    \( -iname compose.yml -o -iname compose.yaml -o \
+       -iname docker-compose.yml -o -iname docker-compose.yaml \) \
+    -print > "$new/exports/docker/compose-files.txt" 2>/dev/null || true
+fi
+
+date --iso-8601=seconds > "$new/PREPARED_AT"
+hostname -f > "$new/HOSTNAME"
+echo "$FRAMEWORK_VERSION" > "$new/FRAMEWORK_VERSION"
+
+(
+  cd "$new"
+  find exports metadata -type f -print0 |
+    sort -z |
+    xargs -0 sha256sum > SHA256SUMS
+  sha256sum -c SHA256SUMS
+)
+
+rm -rf "${published}.old"
+[[ -e "$published" ]] && mv "$published" "${published}.old"
+mv "$new" "$published"
+rm -rf "${published}.old"
+
+printf '%s\n' "$published"

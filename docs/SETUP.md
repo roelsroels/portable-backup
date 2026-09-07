@@ -1,88 +1,74 @@
-# Installation and setup
+# Setup
 
-## Coordinator
+## Dependencies and roles
 
-Install dependencies through your distribution. On a Debian-style system:
+Use a Debian-family Linux system with Bash 4+, systemd, GNU coreutils/findutils, Restic 0.18.1 or compatible, Python 3, rsync, OpenSSH, util-linux, openssl, zstd, acl and iproute2. Install optional database/container clients used by your configured exports. `mount` also requires a working FUSE setup. A sendmail-compatible local MTA handles report delivery.
 
 ```bash
-sudo apt-get update
-sudo apt-get install python3 restic rsync openssh-client tar util-linux zstd
-sudo bash install.sh
+sudo apt-get install bash python3 rsync openssh-client util-linux openssl zstd acl iproute2
 ```
 
-Run the installer from this unpacked repository. It installs code under `/opt/portable-backup`, private configuration under `/etc/portable-backup`, private working data under `/var/lib/portable-backup`, and cache under `/var/cache/portable-backup`. It preserves existing configuration but replaces installed scripts and shipped units. Stop timers and wait for active jobs before upgrading; retain a private copy of the previous installation for rollback. Installation neither initializes storage nor starts timers.
+Install Restic through a source that supplies the required restore features; verify its version. Configure the underlying storage filesystem/mount through your storage provider's procedure. Credentials and mount secrets belong in root-only local files, never in this repository. This package preserves the mounted directory backend, with a mountpoint check at `/mnt/backup-storage`. It does not embed provider-specific mount credentials.
 
-Copy only the sample hosts you actually need:
+## Coordinator (server-b)
 
 ```bash
-sudo install -m 600 config/hosts/server-a.json /etc/portable-backup/hosts/server-a.json
-sudoedit /etc/portable-backup/hosts/server-a.json
-sudoedit /etc/portable-backup/source.json
-sudoedit /etc/portable-backup/extra-paths.txt
+sudo bash install.sh coordinator
+sudoedit /etc/portable-backup/global.conf
+sudoedit /etc/portable-backup/hosts/server-a.conf
+sudoedit /etc/portable-backup/hosts/server-b.conf
 ```
 
-Host aliases must start with a lowercase letter and contain only lowercase letters, digits and hyphens (maximum 48 characters). They identify snapshots, status and systemd instances. Each source uses one source.json. To back up a different scope from the same machine, merge the desired paths into that scope; multiple independently configured source profiles are not implemented.
+Review every neutral placeholder, especially `/home/example-user`, example application paths, `/mnt/backup-storage`, SSH identities and email settings. Configurations are sourced as root shell code and must remain root-owned and mode 600. Create storage and private local staging with enough capacity for export and copied staging together. The mount guard and reporting code use `/mnt/backup-storage` literally: if you choose another mountpoint, update both runtime files and host configs consistently.
 
-For local storage, mount the actual backup volume at your chosen location and adjust `repository` and `required_mount`. Keep `required_mount` enabled to prevent writing backups to the underlying root disk when the volume is absent. Add a systemd drop-in with `RequiresMountsFor=/mnt/backup-storage` under `[Unit]` if appropriate. The example path is a placeholder, not a storage recommendation.
+The command link is `/usr/local/bin/backup` → `/opt/portable-backup/bin/backup`. The installer refuses to replace an unrelated command. Do not run this anonymized installer over another live backup installation as a migration.
 
-Create a strong random repository password without placing it in shell history:
+## Remote source (server-a)
 
 ```bash
-sudo sh -c 'umask 077; head -c 48 /dev/urandom | base64 > /etc/portable-backup/secrets/server-a.password'
-sudo /opt/portable-backup/bin/pb init server-a
-sudo /opt/portable-backup/bin/pb run server-a
-sudo /opt/portable-backup/bin/pb snapshots server-a
+sudo bash install.sh source
+sudoedit /etc/source-backup.conf
+sudoedit /etc/source-backup-extra-paths
 ```
 
-`init` is explicit and only for a NEW repository. Do not regenerate a password for an existing repository. Save passwords, backend credentials and recovery instructions offline. Restic encryption cannot compensate for losing the password.
+Create a dedicated `backup-reader` SSH account and install a dedicated coordinator public key. The remote helper grants that account ACL traversal/read access to its prepared export. Verify SSH host keys through a trusted channel and establish the known_hosts entry before unattended runs. Keep private keys mode 600; configure the coordinator's `REMOTE` and `REMOTE_SSH_KEY` accordingly.
 
-## Remote source
+Install the supplied `source/config/sudoers.conf` with `visudo -f /etc/sudoers.d/portable-backup`, then validate it with `visudo -cf /etc/sudoers.d/portable-backup`. It grants only the three named preparation/cleanup/status commands. Keep those helpers and config root-owned. The helper's export contains sensitive data; possession of this SSH credential grants access to that data. Use the same trusted-coordinator/source arrangement as intended by the scripts.
 
-Install the same package and dependencies on the source, configure `/etc/portable-backup/source.json` there, and leave its coordinator timers disabled. No Restic repository credentials need to be stored on a remote source.
+Use the source config for remote filesystem scope and the coordinator host config for local scope. Replace neutral certificate/mail/application paths with your own or remove unnecessary examples. Missing source paths are skipped by the original scripts, so inspect actual exports carefully before relying on coverage.
 
-Create a dedicated SSH account using local account-management procedures. Install the coordinator's public key and verify the source's SSH host key through a trusted channel. Use `config/ssh-config.example` as a starting point in root's SSH configuration on the coordinator; private keys must be mode 600. Do not disable host-key verification. Restrict the key with `restrict` in authorized_keys; network address restrictions can be added by the operator.
-
-On the source, install the **exact command** from `config/sudoers.example` with `visudo -f /etc/sudoers.d/portable-backup` and validate with `visudo -cf /etc/sudoers.d/portable-backup`. Scripts, hooks and `/etc/portable-backup` must stay root-owned and not writable by the SSH account. Do not grant arbitrary sudo, arbitrary rsync, a shell, or writable root hooks.
-
-The helper prepares and streams one private export under a source lock and removes the temporary export when the stream ends. A failed transfer never creates a new snapshot. The SSH account can read all selected data through this helper: possession of its private key grants that access. Source systems are trusted: the coordinator extracts their archive as root to preserve metadata. Do not enroll an untrusted source; use isolated collectors for different trust domains.
-
-On the coordinator:
+## Initialize NEW repositories only
 
 ```bash
-sudo install -m 600 config/hosts/server-b.json /etc/portable-backup/hosts/server-b.json
-sudoedit /etc/portable-backup/hosts/server-b.json
-sudo /opt/portable-backup/bin/pb init server-b
-sudo /opt/portable-backup/bin/pb run server-b
+sudo backup init server-a --confirm-init
+sudo backup init server-b --confirm-init
 ```
 
-First create server-b's separate password file as above. Configure the `backup-storage` SSH alias and storage permissions for the SFTP example. For another Restic backend, change `repository` and supply that backend's credentials in a root-only environment file or service environment. Ensure manual and scheduled commands receive identical backend credentials. Do not commit them.
+Each command requires typing `INITIALIZE HOST` in a terminal and generates a password only when appropriate. Never initialize an existing repository as a recovery step. Save repository passwords, SSH credentials and private configuration offline. These filenames are configured in the host files; actual password files are not shipped.
 
-## Schedule and reporting
-
-After a successful restore drill:
+Before first backups, validate source helper access, data selection, filesystem mount and capacity. Then run the two jobs manually and complete a restore drill:
 
 ```bash
-sudo systemctl enable --now portable-backup@server-a.timer
-sudo systemctl enable --now portable-backup-report.timer
+sudo backup run server-a
+sudo backup run server-b
+sudo backup snapshots server-a
+sudo backup verify server-a
+sudo backup restore
+```
+
+## Schedules and email
+
+```bash
+sudo systemctl enable --now portable-backup-server-a.timer portable-backup-server-b.timer
+sudo systemctl enable --now portable-backup-report.timer portable-backup-report-email.timer
 sudo systemctl list-timers --all
+sudo backup report --email operator@example.invalid
 ```
 
-Stagger different host instances with `systemctl edit portable-backup@server-b.timer`:
+Replace the example recipient with your actual address before sending. Configure `REPORT_EMAIL`, `REPORT_FROM` and `REPORT_SUBJECT_PREFIX` in global.conf. The original HTML renderer sends multipart email with HTML and text alternatives. Configure and test the MTA separately; no SMTP password is embedded. The renderer is the heredoc in `send_report_email` in `bin/backup`.
 
-```ini
-[Timer]
-OnCalendar=
-OnCalendar=*-*-* 04:00:00
-```
+Schedules are preserved: remote backup at 03:15, local backup at 04:15, each with up to 20 minutes of jitter; reports at 06:00 with critical-only email Sunday–Friday and unconditional email Saturday. Times follow the host timezone. Customize with systemd timer drop-ins and reload systemd. Ensure jobs finish before reporting.
 
-Then enable that timer. The coordinator serializes operations and rejects overlaps rather than queues them, so leave enough time for exports, transfer and pruning. Timers use the system's local timezone and persistent catch-up; simultaneous catch-up runs may need a manual retry. Reports should run after backups finish. Test mail delivery by configuring `email_to` in report.json and running `pb report --email`.
+## Upgrade / removal
 
-## Remove a source / uninstall
-
-Disable and stop its timer, wait for its running service to finish, then remove its host configuration from the coordinator. Revoke the dedicated source SSH key and sudoers entry when no longer needed. This does not delete snapshots. Uninstall by stopping all framework timers/services and removing installed units and `/opt/portable-backup`; preserve credentials and repositories until recovery is no longer required. Never treat uninstall as permission to delete backup storage.
-
-## HTML email layout
-
-Email reports use the styled `templates/report.html` layout, installed at `/opt/portable-backup/templates/report.html`. It uses inline styles, a compact table layout, colored status badges and no external images, fonts or tracking resources. Customize its text/colors while preserving the `$status`, `$background`, `$foreground`, `$summary` and `$rows` placeholders. Escape a literal dollar sign as `$$`. Upgrades replace the installed template; keep customizations in a private copy or your own fork.
-
-The message is multipart/alternative: HTML is the preferred displayed part, with a text fallback for clients that cannot render HTML. Terminal report output remains readable text. A sendmail-compatible mail service is still required; the template does not configure SMTP delivery. Use `pb report --email` to test delivery after installation.
+Stop timers and wait for jobs before replacing installed code. Preserve a private copy for rollback; the installer updates runtime scripts/units and preserves existing configs. To remove a source, stop/disable its timer, remove its config and adjust the two explicit host lists in `bin/backup`, then revoke its SSH/sudo access. Repository deletion is a separate decision. Uninstall by disabling units and removing framework files only after retaining recovery credentials; never delete backup storage as part of uninstall.

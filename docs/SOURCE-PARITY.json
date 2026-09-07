@@ -1,0 +1,102 @@
+[
+  {
+    "file": "bin/rb-prepare-local",
+    "sha256": "7817dcb8417403aa77da9ea5dd1085f97cea72a8fc31eb8b3b692fd15df4b9eb",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "bin/backup",
+    "sha256": "cdba50911b226a3778da9788febcb7c36906752a4375349f8e0465bc0f69f888",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "lib/common.sh",
+    "sha256": "5f909eaab4eae78bf993c424758368179dbed106c9933a8deea020cd35acfbea",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "config/global.conf",
+    "sha256": "b5b7ec6bd482e26352902e2b35d6cce832439b3ce5d780c83f0bdfafdce80631",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "config/hosts/server-a.conf",
+    "sha256": "2e5ab44961645937a5b8c1953a63b6e53c9ec058e4f363d088c0e8e8027b5d9b",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "config/hosts/server-b.conf",
+    "sha256": "a98310715e60d1194ca96a683113ae9e99b4e27ace6d5f0ca3b8d32c87a5dac3",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-server-a.timer",
+    "sha256": "2a6f847132cbe329f758eff55d669f74c54949b12d04ac194025f542232bd6a7",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-report-email.service",
+    "sha256": "51c00ec7cf5e5f4701bf7a4c77ad74b959dfb68d9fc16044f5c2460942230d5c",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup@.service",
+    "sha256": "c3da94a5e55cebba2ac7a686de2e685ace3d71452c2007de525a531b8e122c3a",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-report.timer",
+    "sha256": "6b40d0c52e6c75f6bde64c3f873d66b6f558cc950edcd26929e0e62ab6be0a40",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-server-b.timer",
+    "sha256": "afe5f86e956a501637435e53862cb914cf68e5c8bd81c9ac2c56d3f582e647f0",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-report.service",
+    "sha256": "cfea2ebf6a88a25b99182bb75d31b1fac1752ff6e049e35f1dd3d1d80dbbcc82",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup-report-email.timer",
+    "sha256": "1fee7a33a20e4705583e6e4b6dc08f8d1abbf3b203546773ebd716a32af8de93",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "systemd/portable-backup@.service.d/environment.conf",
+    "sha256": "de554d0ca967fdd4c2b6abe3903bdf8d8d5f3b5a14c650717d8706b5c925cc46",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/source-backup-clean.sh",
+    "sha256": "af09abcf491f03df7b10b529dcb1597b44aa58efdc198f8f9e25acad135b8767",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/source-backup-prepare.sh",
+    "sha256": "6fb5f7ac84a54aec0b4faba3df6f7888134aff7737fc4294465cba542ad7e64d",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/config/source-backup.conf",
+    "sha256": "8944d9dae357854d98ac7e8f192e09752cefbbd3ac2ba17ed2e861dc9f372dea",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/config/source-backup-extra-paths",
+    "sha256": "a09dce6339e9739ff6bf3ccd1e7dc9c8460a214bdeb8df695d09010b3ffc9e24",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/source-backup-status.sh",
+    "sha256": "421b14cda4d12c0e477d22fbfa7dafa4b416de6e8cfec4e26851a4af6b69de88",
+    "comparison": "matches installed source after literal anonymization"
+  },
+  {
+    "file": "source/config/sudoers.conf",
+    "sha256": "f4f2092d36adb3d8ff9baaa45c5422ef15a3e275bcd4b4e423b0c436d10cf844",
+    "comparison": "matches installed source after literal anonymization"
+  }
+]

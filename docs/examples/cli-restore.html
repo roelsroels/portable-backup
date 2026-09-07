@@ -1,14 +1,14 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><title>Inspect and recover</title><body style="margin:0;padding:32px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1000px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · EXAMPLE</p><h1 style="color:#0f172a;font-size:28px;">Inspect and recover</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Terminal · synthetic demonstration</div><pre style="padding:24px;margin:0;color:#e2e8f0;font:15px/1.8 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;"># List available snapshots, then inspect the selected snapshot.
-$ sudo /opt/portable-backup/bin/pb snapshots server-a
-$ sudo /opt/portable-backup/bin/pb ls server-a --snapshot latest
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Interactive restore</title><body style="margin:0;padding:28px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1024px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · SYNTHETIC EXAMPLE</p><h1 style="color:#0f172a;font-size:26px;">Interactive restore</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Original Bash command · anonymized demonstration</div><pre style="padding:22px;margin:0;color:#e2e8f0;font:14px/1.6 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">$ sudo backup restore
 
-# Restore into a NEW directory for review.
-$ sudo /opt/portable-backup/bin/pb restore server-a \
-    --snapshot latest \
-    --target /var/tmp/recovery-review
+===========================================
+        INTERACTIVE RESTORE ASSISTANT
+===========================================
 
-# Recover just one subtree into another NEW directory.
-$ sudo /opt/portable-backup/bin/pb restore server-a \
-    --snapshot latest \
-    --target /var/tmp/recovery-subset \
-    --include &#x27;/filesystem/srv/**&#x27; </pre></div><p style="font-size:13px;color:#475569;">Illustrative commands and abbreviated output. No live host data is shown.</p></div></body></html>
+Select the backup host:
+
+  1) server-a
+  2) server-b
+  q) Cancel
+
+Selection: q
+Restore cancelled.</pre></div><p style="font-size:12px;color:#475569;">Synthetic placeholders; no live repository, timestamps or server data shown.</p></div></body></html>

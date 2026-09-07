@@ -1,0 +1,25 @@
+$ sudo backup
+Usage:
+  backup init <server-a|server-b> --confirm-init
+  backup run <server-a|server-b>
+  backup status <server-a|server-b>
+  backup snapshots <server-a|server-b>
+  backup verify <server-a|server-b>
+  backup health <server-a|server-b>
+  backup restore
+      Opens the interactive restore selection menu.
+
+  backup restore <server-a|server-b> [snapshot] <target-directory>
+      Performs a non-interactive restore.
+  backup mount <server-a|server-b> <mountpoint>
+  backup unlock <server-a|server-b>
+
+  backup report
+  backup report --email
+  backup report --email <recipient-address>
+  backup report --email-on-critical
+  backup report --email-on-critical <recipient-address>
+
+Report email defaults are read from:
+  /etc/portable-backup/global.conf
+

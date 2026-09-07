@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Restic backup of server-a
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+RandomizedDelaySec=20m
+Persistent=true
+Unit=portable-backup@server-a.service
+
+[Install]
+WantedBy=timers.target
