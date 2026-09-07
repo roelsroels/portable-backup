@@ -80,3 +80,9 @@ Then enable that timer. The coordinator serializes operations and rejects overla
 ## Remove a source / uninstall
 
 Disable and stop its timer, wait for its running service to finish, then remove its host configuration from the coordinator. Revoke the dedicated source SSH key and sudoers entry when no longer needed. This does not delete snapshots. Uninstall by stopping all framework timers/services and removing installed units and `/opt/portable-backup`; preserve credentials and repositories until recovery is no longer required. Never treat uninstall as permission to delete backup storage.
+
+## HTML email layout
+
+Email reports use the styled `templates/report.html` layout, installed at `/opt/portable-backup/templates/report.html`. It uses inline styles, a compact table layout, colored status badges and no external images, fonts or tracking resources. Customize its text/colors while preserving the `$status`, `$background`, `$foreground`, `$summary` and `$rows` placeholders. Escape a literal dollar sign as `$$`. Upgrades replace the installed template; keep customizations in a private copy or your own fork.
+
+The message is multipart/alternative: HTML is the preferred displayed part, with a text fallback for clients that cannot render HTML. Terminal report output remains readable text. A sendmail-compatible mail service is still required; the template does not configure SMTP delivery. Use `pb report --email` to test delivery after installation.

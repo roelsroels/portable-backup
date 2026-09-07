@@ -2,7 +2,7 @@
 
 ## Completed locally
 
-- 16 Python unit/regression tests passed.
+- 20 Python unit/regression tests passed.
 - Bash syntax checks passed for the installer and all three database hooks.
 - Python source compilation and sample JSON parsing passed.
 - Package content and filenames scanned for source-specific identity/infrastructure terms, real snapshot IDs and personal paths; no matches remained.
@@ -27,3 +27,5 @@ A disposable real Restic round-trip test is included as `tests/integration.py` a
 6. Test all enabled database restores and application startup in isolation.
 7. Exercise stale/failed report conditions, mail delivery and systemd timer schedules, including catch-up behavior.
 8. Review retention preview and confirm recovery credentials exist offline before real deployment.
+
+HTML email checks cover multipart MIME structure, preferred HTML rendering, status variants, escaped runtime data and recipient header injection rejection. Actual mail-client rendering and delivery remain deployment acceptance checks.

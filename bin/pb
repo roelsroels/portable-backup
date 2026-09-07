@@ -2,6 +2,7 @@
 import argparse, datetime, hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'lib'))
 from core import *
+from report_email import build_message
 BASE=pathlib.Path(__file__).resolve().parent
 def verify(stage):
     manifest=json.loads((stage/'manifest.json').read_text())
@@ -76,15 +77,15 @@ def report(force):
         try:
             usage=shutil.disk_usage(path); percent=100*(usage.total-usage.free)/usage.total
             level=2 if percent>=90 else 1 if percent>=80 else 0
-            severity=max(severity,level); lines.append(f'Capacity {path}: {percent:.1f}%')
+            severity=max(severity,level); lines.append(f'Capacity {path}: {("OK","ALERT","CRITICAL")[level]}; {percent:.1f}% used')
         except OSError as e: severity=2; lines.append('CRITICAL: capacity unavailable: '+str(e))
     body='\n'.join(lines)+'\n'; print(body,end='')
     if force or severity==2 or datetime.datetime.now().weekday()==settings.get('weekly_day',5):
         recipient=settings.get('email_to','')
         if recipient:
             if '\n' in recipient or '\r' in recipient: raise ValueError('Invalid recipient')
-            msg=f'To: {recipient}\nSubject: Backup report: {("OK","ALERT","CRITICAL")[severity]}\n\n'+body
-            run(['/usr/sbin/sendmail','-t','-oi'],input=msg,text=True)
+            msg=build_message(recipient,severity,lines)
+            run(['/usr/sbin/sendmail','-t','-oi'],input=msg)
         else: print('Email disabled: configure email_to',file=sys.stderr)
     return severity
 def main():
