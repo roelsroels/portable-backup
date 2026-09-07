@@ -1,0 +1,8 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Health report</title><body style="margin:0;padding:32px;background:#e2e8f0;font-family:Arial,sans-serif;"><div style="max-width:1000px;margin:auto;"><p style="font-size:12px;letter-spacing:2px;color:#475569;font-weight:bold;">PORTABLE BACKUP · EXAMPLE</p><h1 style="color:#0f172a;font-size:28px;">Health report</h1><div style="border-radius:12px;overflow:hidden;background:#0f172a;"><div style="padding:14px 20px;background:#1e293b;color:#cbd5e1;font-size:13px;">Terminal · synthetic demonstration</div><pre style="padding:24px;margin:0;color:#e2e8f0;font:15px/1.8 Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;">$ sudo /opt/portable-backup/bin/pb report
+server-a: OK; snapshot age 2.0h; pipeline success
+server-b: CRITICAL; snapshot age 42.0h; pipeline failed
+Capacity /var/lib/portable-backup: OK; 24.0% used
+Capacity /mnt/backup-storage: ALERT; 85.0% used
+
+$ echo $?
+2</pre></div><p style="font-size:13px;color:#475569;">Illustrative commands and abbreviated output. No live host data is shown.</p></div></body></html>

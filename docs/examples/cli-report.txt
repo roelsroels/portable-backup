@@ -1,0 +1,10 @@
+ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.
+
+$ sudo /opt/portable-backup/bin/pb report
+server-a: OK; snapshot age 2.0h; pipeline success
+server-b: CRITICAL; snapshot age 42.0h; pipeline failed
+Capacity /var/lib/portable-backup: OK; 24.0% used
+Capacity /mnt/backup-storage: ALERT; 85.0% used
+
+$ echo $?
+2

@@ -1,0 +1,16 @@
+ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.
+
+# List available snapshots, then inspect the selected snapshot.
+$ sudo /opt/portable-backup/bin/pb snapshots server-a
+$ sudo /opt/portable-backup/bin/pb ls server-a --snapshot latest
+
+# Restore into a NEW directory for review.
+$ sudo /opt/portable-backup/bin/pb restore server-a \
+    --snapshot latest \
+    --target /var/tmp/recovery-review
+
+# Recover just one subtree into another NEW directory.
+$ sudo /opt/portable-backup/bin/pb restore server-a \
+    --snapshot latest \
+    --target /var/tmp/recovery-subset \
+    --include '/filesystem/srv/**' 

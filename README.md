@@ -23,6 +23,14 @@ source directories + application exports
 
 The source tree contains no live configuration, passwords, logs, inventories, repository data, personal identities or deployment history. All domains use reserved examples. Runtime backups necessarily contain the operator's actual data and must remain private.
 
+## Example screens
+
+See the [example gallery](docs/examples/README.md) for CLI reporting, backup/maintenance, restore commands and a rendered HTML email. All examples use synthetic data.
+
+![CLI health report example](docs/examples/cli-report.png)
+
+![HTML email report example](docs/examples/email-report.png)
+
 ## Requirements
 
 Linux with systemd, Python 3.11+, GNU tar with ACL/xattr support, rsync with ACL/xattr support, Restic supporting `--retry-lock`, OpenSSH and util-linux. Debian 12+ or comparable distributions are the intended starting point; no production compatibility certification is claimed. Optional exports require their database clients and zstd. Email requires a configured local sendmail-compatible MTA.

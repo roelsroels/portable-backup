@@ -29,3 +29,5 @@ A disposable real Restic round-trip test is included as `tests/integration.py` a
 8. Review retention preview and confirm recovery credentials exist offline before real deployment.
 
 HTML email checks cover multipart MIME structure, preferred HTML rendering, status variants, escaped runtime data and recipient header injection rejection. Actual mail-client rendering and delivery remain deployment acceptance checks.
+
+Example documentation: four PNG previews were rendered from local HTML in Chromium and visually inspected. The email preview uses the shipped renderer; CLI examples are synthetic, abbreviated demonstrations. These screenshots do not establish live CLI execution or mail-client compatibility.

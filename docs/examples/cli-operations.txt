@@ -1,0 +1,14 @@
+ILLUSTRATIVE EXAMPLE — synthetic data; abbreviated output.
+
+# Preview retention before changing stored history.
+$ sudo /opt/portable-backup/bin/pb retention-preview server-a
+
+# Run the full backup, retention and integrity-check pipeline.
+$ sudo /opt/portable-backup/bin/pb run server-a
+Backup complete
+
+# Read all repository data during a scheduled verification window.
+$ sudo /opt/portable-backup/bin/pb check server-a --read-data
+
+# Request an email report using the configured mail service.
+$ sudo /opt/portable-backup/bin/pb report --email
