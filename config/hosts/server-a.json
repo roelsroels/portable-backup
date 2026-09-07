@@ -1,0 +1,12 @@
+{
+  "mode": "local",
+  "repository": "/mnt/backup-storage/restic/server-a",
+  "password_file": "/etc/portable-backup/secrets/server-a.password",
+  "retention": {
+    "daily": 7,
+    "weekly": 4,
+    "monthly": 6
+  },
+  "max_age_hours": 36,
+  "required_mount": "/mnt/backup-storage"
+}

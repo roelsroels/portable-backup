@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+: "${PB_EXPORT_DIR:?}"
+mkdir -p "$PB_EXPORT_DIR/mongodb"
+mongodump --archive | zstd -T0 -3 -o "$PB_EXPORT_DIR/mongodb/all-databases.archive.zst"
+zstd -t "$PB_EXPORT_DIR/mongodb/all-databases.archive.zst"

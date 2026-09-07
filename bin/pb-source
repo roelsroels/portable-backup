@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+import os, sys, pathlib, tempfile, shutil, subprocess, json, hashlib, datetime
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'lib'))
+from core import *
+def prepare(out, c):
+    for d in ('filesystem','exports','metadata','docker-volumes'):
+        (out/d).mkdir()
+    excludes = ['/var/lib/portable-backup','/var/cache/portable-backup'] + c.get('exclude',[])
+    paths = c['include'][:]
+    if c.get('extra_paths_file'):
+        paths += [p.strip() for p in pathlib.Path(c['extra_paths_file']).read_text().splitlines() if p.strip() and not p.lstrip().startswith('#')]
+    for p in paths:
+        src = pathlib.Path(p)
+        if not src.is_absolute() or '..' in src.parts or p == '/':
+            raise ValueError('Include explicit absolute directories, not / or ..')
+        if not src.exists() and not src.is_symlink():
+            raise ValueError('Required source is missing: ' + p)
+        resolved = src.resolve()
+        if resolved == STATE or STATE in resolved.parents:
+            raise ValueError('Cannot back up staging')
+        args=['-aHAX','--numeric-ids','--relative','--one-file-system']
+        args += ['--exclude='+x.rstrip('/')+'/***' for x in excludes]
+        live_copy(args + ['--',p,str(out/'filesystem')+'/'])
+    # Inventory is intentionally runtime-only; none is shipped in the repository.
+    for filename, cmd in [('os-release',['cat','/etc/os-release']),('packages',['dpkg','--get-selections']),('units',['systemctl','list-unit-files','--no-pager']),('mounts',['findmnt']),('block-devices',['lsblk','-f'])]:
+        if shutil.which(cmd[0]):
+            with (out/'metadata'/filename).open('wb') as f: run(cmd,stdout=f)
+    # Hooks must produce consistent application exports and fail on any error.
+    for hook in c.get('export_hooks',[]):
+        if not isinstance(hook,list) or not hook: raise ValueError('Hook must be an argv array')
+        e=os.environ.copy(); e['PB_EXPORT_DIR']=str(out/'exports')
+        run(hook,env=e,stdout=sys.stderr)
+    if c.get('docker_volumes',False):
+        ids=run(['docker','ps','-aq'],capture_output=True,text=True).stdout.split()
+        if ids:
+            (out/'metadata'/'containers.json').write_text(run(['docker','inspect',*ids],capture_output=True,text=True).stdout)
+        volumes=run(['docker','volume','ls','-q'],capture_output=True,text=True).stdout.split()
+        for v in volumes:
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*',v): raise ValueError('Invalid volume')
+            info=run(['docker','volume','inspect',v],capture_output=True,text=True).stdout
+            (out/'metadata'/(v+'.json')).write_text(info)
+            mount=json.loads(info)[0]['Mountpoint']
+            if not pathlib.Path(mount).is_dir(): raise ValueError('Volume mount missing')
+            live_copy(['-aHAX','--numeric-ids','--',mount+'/',str(out/'docker-volumes'/v)+'/'])
+    (out/'metadata'/'prepared-at').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat()+'\n')
+    # Manifest covers regular files throughout the frozen export, including filesystem data.
+    manifest={}
+    for p in out.rglob('*'):
+        if p.is_file() and not p.is_symlink():
+            with p.open('rb') as f:
+                manifest[str(p.relative_to(out))]=hashlib.file_digest(f,'sha256').hexdigest()
+    (out/'manifest.json').write_text(json.dumps(manifest,sort_keys=True))
+def main():
+    if os.geteuid()!=0: raise ValueError('Run as root')
+    if sys.argv[1:] != ['stream']: raise ValueError('Usage: pb-source stream')
+    os.umask(0o077)
+    c=json.loads((CONFIG/'source.json').read_text())
+    with lock('source'):
+        with tempfile.TemporaryDirectory(prefix='export-',dir=STATE) as tmp:
+            out=pathlib.Path(tmp)
+            # Source lock remains held for preparation AND complete streaming.
+            prepare(out,c)
+            run(['tar','--acls','--xattrs','--numeric-owner','-C',out,'-cpf','-','.'])
+if __name__=='__main__':
+    try: main()
+    except Exception as e: print(str(e),file=sys.stderr); sys.exit(1)

@@ -1,0 +1,13 @@
+Host backup-source
+    HostName source.example.invalid
+    User backup-reader
+    IdentityFile /root/.ssh/backup-source
+    BatchMode yes
+    StrictHostKeyChecking yes
+
+Host backup-storage
+    HostName storage.example.invalid
+    User repository-user
+    IdentityFile /root/.ssh/backup-storage
+    BatchMode yes
+    StrictHostKeyChecking yes

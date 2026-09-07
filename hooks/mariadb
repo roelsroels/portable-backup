@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+: "${PB_EXPORT_DIR:?}"
+mkdir -p "$PB_EXPORT_DIR/mariadb"
+mariadb-dump --all-databases --single-transaction --quick --routines --events --triggers --hex-blob |
+  zstd -T0 -3 -o "$PB_EXPORT_DIR/mariadb/all-databases.sql.zst"
+zstd -t "$PB_EXPORT_DIR/mariadb/all-databases.sql.zst"

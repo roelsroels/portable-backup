@@ -1,0 +1,11 @@
+[Unit]
+Description=Scheduled portable backup operation
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=15m
+Persistent=true
+Unit=portable-backup@%i.service
+
+[Install]
+WantedBy=timers.target

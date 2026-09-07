@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+: "${PB_EXPORT_DIR:?}"
+# One explicitly selected cluster per invocation; duplicate hook with another port if needed.
+port="${1:-5432}"
+[[ "$port" =~ ^[0-9]+$ ]] || exit 2
+mkdir -p "$PB_EXPORT_DIR/postgresql/$port"
+runuser -u postgres -- pg_dumpall --port="$port" |
+  zstd -T0 -3 -o "$PB_EXPORT_DIR/postgresql/$port/all-databases.sql.zst"
+zstd -t "$PB_EXPORT_DIR/postgresql/$port/all-databases.sql.zst"

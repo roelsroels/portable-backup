@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+import argparse, datetime, hashlib, json, os, pathlib, shutil, subprocess, sys, tempfile
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'lib'))
+from core import *
+BASE=pathlib.Path(__file__).resolve().parent
+def verify(stage):
+    manifest=json.loads((stage/'manifest.json').read_text())
+    if not manifest: raise ValueError('Empty export manifest')
+    for name,digest in manifest.items():
+        p=(stage/name).resolve()
+        if not p.is_relative_to(stage.resolve()): raise ValueError('Unsafe manifest path')
+        with p.open('rb') as f:
+            if hashlib.file_digest(f,'sha256').hexdigest()!=digest: raise ValueError('Checksum mismatch: '+name)
+@contextlib.contextmanager
+def staging(name):
+    # Stable absolute path preserves Restic parent selection and retention groups.
+    parent=STATE/'staging'/name
+    parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    stage=parent/'source'
+    if stage.is_symlink(): raise ValueError('Staging path must not be a symlink')
+    if stage.exists(): shutil.rmtree(stage)
+    stage.mkdir(mode=0o700)
+    try: yield stage
+    finally: shutil.rmtree(stage)
+def backup(name,c):
+    retention(c)  # Validate before doing work.
+    status=STATE/(name+'.status.json')
+    status.write_text(json.dumps({'result':'running','time':datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+    try:
+        with staging(name) as tmp:
+            stage=pathlib.Path(tmp)
+            if c['mode']=='local': cmd=[BASE/'pb-source','stream']
+            elif c['mode']=='remote':
+                alias=c['ssh_alias']
+                if not re.fullmatch(r'[a-zA-Z][a-zA-Z0-9-]*',alias): raise ValueError('Invalid SSH alias')
+                cmd=['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',alias,'sudo -n /opt/portable-backup/bin/pb-source stream']
+            else: raise ValueError('Unknown mode')
+            # Completed exports use a strict stream: every nonzero producer/receiver exit fails.
+            with subprocess.Popen([str(x) for x in cmd],stdout=subprocess.PIPE) as source:
+                result=subprocess.run(['tar','--acls','--xattrs','--numeric-owner','-C',str(stage),'-xpf','-'],stdin=source.stdout)
+                source.stdout.close()
+                code=source.wait()
+                if result.returncode or code: raise ValueError('Export transfer failed')
+            verify(stage)
+            # Relative arguments keep snapshot paths stable across temporary export directories.
+            restic(c,'backup',*filters(name),'--','filesystem','exports','metadata','docker-volumes','manifest.json',cwd=stage)
+            restic(c,'forget',*filters(name),'--group-by','host,paths',*retention(c),'--prune')
+            restic(c,'check')
+        result='success'
+    except BaseException:
+        status.write_text(json.dumps({'result':'failed','time':datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+        raise
+    status.write_text(json.dumps({'result':result,'time':datetime.datetime.now(datetime.timezone.utc).isoformat()}))
+    print('Backup complete')
+def report(force):
+    settings=json.loads((CONFIG/'report.json').read_text())
+    severity=0; lines=[]
+    hosts=sorted((CONFIG/'hosts').glob('*.json'))
+    if not hosts: severity=2; lines.append('CRITICAL: no configured hosts')
+    for p in hosts:
+        name=p.stem
+        try:
+            c=load(name)
+            snaps=json.loads(restic(c,'snapshots',*filters(name),'--json',capture_output=True,text=True).stdout)
+            newest=max(datetime.datetime.fromisoformat(s['time'].replace('Z','+00:00')) for s in snaps)
+            age=(datetime.datetime.now(datetime.timezone.utc)-newest).total_seconds()/3600
+            state=json.loads((STATE/(name+'.status.json')).read_text())
+            bad=age<0 or age>c.get('max_age_hours',36) or state['result']!='success'
+            stateage=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(state['time'])).total_seconds()/3600
+            bad=bad or stateage<0 or stateage>c.get('max_age_hours',36)
+            lines.append(f'{name}: {"CRITICAL" if bad else "OK"}; snapshot age {age:.1f}h; pipeline {state["result"]}')
+            if bad: severity=2
+        except Exception as e:
+            severity=2; lines.append(f'{name}: CRITICAL; {e}')
+    for path in settings.get('capacity_paths',[]):
+        try:
+            usage=shutil.disk_usage(path); percent=100*(usage.total-usage.free)/usage.total
+            level=2 if percent>=90 else 1 if percent>=80 else 0
+            severity=max(severity,level); lines.append(f'Capacity {path}: {percent:.1f}%')
+        except OSError as e: severity=2; lines.append('CRITICAL: capacity unavailable: '+str(e))
+    body='\n'.join(lines)+'\n'; print(body,end='')
+    if force or severity==2 or datetime.datetime.now().weekday()==settings.get('weekly_day',5):
+        recipient=settings.get('email_to','')
+        if recipient:
+            if '\n' in recipient or '\r' in recipient: raise ValueError('Invalid recipient')
+            msg=f'To: {recipient}\nSubject: Backup report: {("OK","ALERT","CRITICAL")[severity]}\n\n'+body
+            run(['/usr/sbin/sendmail','-t','-oi'],input=msg,text=True)
+        else: print('Email disabled: configure email_to',file=sys.stderr)
+    return severity
+def main():
+    if os.geteuid()!=0: raise ValueError('Run as root')
+    p=argparse.ArgumentParser(description='Portable backup administration')
+    p.add_argument('command',choices=['run','init','snapshots','ls','restore','retention-preview','check','unlock-stale','report'])
+    p.add_argument('host',nargs='?'); p.add_argument('--snapshot',default='latest'); p.add_argument('--target'); p.add_argument('--include'); p.add_argument('--read-data',action='store_true'); p.add_argument('--email',action='store_true'); p.add_argument('--confirm-idle',action='store_true')
+    a=p.parse_args()
+    if a.command=='report': return report(a.email)
+    if not a.host: p.error('host is required')
+    c=load(a.host)
+    with lock('coordinator'):
+        if a.command=='run': backup(a.host,c)
+        elif a.command=='init': restic(c,'init')
+        elif a.command=='snapshots': restic(c,'snapshots',*filters(a.host))
+        elif a.command=='ls': restic(c,'ls',*filters(a.host),a.snapshot)
+        elif a.command=='check': restic(c,'check',*(['--read-data'] if a.read_data else []))
+        elif a.command=='retention-preview': restic(c,'forget',*filters(a.host),'--group-by','host,paths',*retention(c),'--dry-run')
+        elif a.command=='unlock-stale':
+            if not a.confirm_idle: raise ValueError('Stop jobs on ALL repository clients; inspect processes and then add --confirm-idle')
+            if subprocess.run(['pgrep','-x','restic'],stdout=subprocess.DEVNULL).returncode==0: raise ValueError('A local Restic process is active')
+            restic(c,'list','locks'); restic(c,'unlock'); restic(c,'list','locks')
+        elif a.command=='restore':
+            if not a.target or not pathlib.Path(a.target).is_absolute(): raise ValueError('An absolute, new restore target is required')
+            target=pathlib.Path(a.target)
+            if target.exists() or target.is_symlink(): raise ValueError('Restore target must not already exist')
+            target.mkdir(mode=0o700,parents=True)
+            restic(c,'restore',a.snapshot,*filters(a.host),'--target',target,*(['--include',a.include] if a.include else []))
+    return 0
+if __name__=='__main__':
+    os.umask(0o077)
+    try: sys.exit(main())
+    except Exception as e: print('ERROR: '+str(e),file=sys.stderr); sys.exit(2)
